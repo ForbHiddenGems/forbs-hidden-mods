@@ -6,8 +6,19 @@ plus a Blender add-on and tools for making and editing Digimon.
 This repository contains **no game files**. To use any of it you need your own copy of the game and
 a DW2-PC build made from it.
 
-**New here? Start with [INSTALL.md](INSTALL.md):** every step from a fresh Windows PC to the game
-with the mods, built from source.
+## What you need
+
+These mods are changes to another project's source code, so you need three things. None of them are in
+this repository:
+
+| | Where to get it |
+| --- | --- |
+| **The DW2-PC source code**, at version `1dbb32a` (v1.0.0-beta) | **<https://github.com/Wyrelade/DW2-PC>**: the Digimon World 2 PC port, built from the [Digimon World 2 decompilation](https://github.com/Wyrelade/Digimon-World-2-Decomp). Public domain (CC0). `git clone https://github.com/Wyrelade/DW2-PC.git`, then `git checkout 1dbb32a`. |
+| **Your own Digimon World 2 disc** | USA, **SLUS-01193**, dumped as a raw `.bin` + `.cue`. The build takes the game's data from it; no game data is shared anywhere. |
+| **Build tools** | Git, Python 3, MinGW-w64 GCC, SDL3 and mkpsxiso: links in [INSTALL.md](INSTALL.md). |
+
+**[INSTALL.md](INSTALL.md) walks through all of it, step by step**, from a fresh Windows PC to the
+game with the mods.
 
 ## Everything from this folder: `forbs.py`
 
