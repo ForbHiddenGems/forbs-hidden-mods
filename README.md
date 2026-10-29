@@ -135,7 +135,6 @@ Python 3. `dw2render.py` also needs `numpy` and `Pillow`.
 
 ## Licence
 
-All rights reserved. The code here may not be copied, changed or redistributed without
-permission.
+PolyForm Noncommercial 1.0.0 licence applies.  
 
 Digimon and Digimon World 2 belong to their owners. This project includes none of their data.
