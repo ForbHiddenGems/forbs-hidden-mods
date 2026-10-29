@@ -1,0 +1,238 @@
+From bb6742a03cfd330d9ae1faefb4a8c11c8bfa5f71 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 22:04:09 +0000
+Subject: [PATCH 15/26] F1: our mods on their own tab, 'Forbs Hidden Mods'
+ (domain camera, mystery encounters, LvlLimitBoostr, model mods)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md       |  10 ++---
+ host/host.h         |   1 +
+ host/mods.c         |   4 ++
+ host/settingsui.cpp | 104 +++++++++++++++++++++++++++-----------------
+ 4 files changed, 74 insertions(+), 45 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index f761069..64e4031 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -1,7 +1,7 @@
+ # 3D domain views (FP)
+ 
+ A native-only mod for the PC port: extra cameras for the domains, with the camera moving
+-smoothly between them. **F4** cycles the views, also in **F1 > Display > Domain camera**:
++smoothly between them. **F4** cycles the views, also in **F1 > Forbs Hidden Mods > Domain camera**:
+ 
+ 1. **Classic**: the original overhead view, drawn by the game's own renderer.
+ 2. **High chase**: raised behind the Digi-Beetle, looking down, turning with it.
+@@ -11,9 +11,9 @@ smoothly between them. **F4** cycles the views, also in **F1 > Display > Domain
+ Each press swoops the camera to the next view in under a second (height, distance, tilt,
+ field of view and rotation blend together; the overhead view's squashed tile rows unsquash
+ on the way). The choice is saved as `domain_view` in `settings.ini` (0..3); `--fpview`
+-starts in first person. **F10** turns ceilings on and off. **Smooth turning** (F1 > Display,
++starts in first person. **F10** turns ceilings on and off. **Smooth turning** (F1 > Forbs Hidden Mods,
+ on by default, `smooth_turns`) eases the camera and the beetle round when it turns.
+-**Mystery encounters** (F1 > Display, `mystery_encounters`) show wandering Digimon as a
++**Mystery encounters** (F1 > Forbs Hidden Mods, `mystery_encounters`) show wandering Digimon as a
+ floating ? until the battle starts: 1 per floor, 30% of encounters, all except bosses, or off
+ (the default). It works in every view, Classic too. **A ? holds a rarer Digimon** (F1, on by
+ default, `mystery_rare`) swaps each ? for one of its floor's less common enemy groups.
+@@ -65,7 +65,7 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   smooth frames both off) floors are cut 2 x 2 and walls 2 x 1 against affine texture warp.
+ - **Ceilings** on walled floors (walls going up): each floor tile gets a ceiling at the wall
+   tops with its own floor texture, a little darker (`FP_CEILING_SHADE`). Off by default;
+-  **F10** or F1 > Display > Ceilings in first person turns them on (`fp_ceilings` in
++  **F10** or F1 > Forbs Hidden Mods > Ceilings in first person turns them on (`fp_ceilings` in
+   `settings.ini`).
+   Platform floors have no walls above them, so they stay open to the black background.
+ - **Walls** keep the retail templates and the retail cull rule (`Stg40_DrawTileWalls`), so
+@@ -110,7 +110,7 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+ 
+ - **What it does**: +1 to a party Digimon's level limit (`maxLevel`). Only for a Digimon at
+   its limit whose limit is below 99; a limit of 99 can't be raised.
+-- **Where it comes from** (`FP_BOOST_PCT`, 1 %; F1 > Display > LvlLimitBoostr, both on by
++- **Where it comes from** (`FP_BOOST_PCT`, 1 %; F1 > Forbs Hidden Mods > LvlLimitBoostr, both on by
+   default):
+   - **1% of all chests** (`boost_chests`): every chest in the domains is rolled the first
+     time it is opened (`Stg40_FpChestHasBoost`), mystery encounters or not. None leaves it in
+diff --git a/host/host.h b/host/host.h
+index bbba4ac..3fc8291 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -152,6 +152,7 @@ void Host_PakOpen(const char *path, const char *disc, int no_window);
+  * folder (model mods); Host_ModFile is NULL for a file that is not replaced. */
+ void Host_ModsInit(void);
+ const void *Host_ModFile(int id, int *size);
++int Host_ModsCount(void);
+ int Host_PakSector(int lba, unsigned char *body);
+ /* The file holding sector `lba` and its size in sectors, or -1 (and 0 sectors). */
+ int Host_PakFileAt(int lba, int *sectors);
+diff --git a/host/mods.c b/host/mods.c
+index 8893593..7515c69 100644
+--- a/host/mods.c
++++ b/host/mods.c
+@@ -102,3 +102,7 @@ const void *Host_ModFile(int id, int *size) {
+     }
+     return mod_data[id];
+ }
++
++int Host_ModsCount(void) {
++    return mod_count;
++}
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index a868c3a..0d8d248 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -20,6 +20,7 @@ extern "C" void Host_RequestSetting(int id, int value);
+ extern "C" void Host_AudioSetVolume(int volume);
+ extern "C" const char *Host_RendererName(void);
+ extern "C" const char *Host_FpViewName(int view);
++extern "C" int Host_ModsCount(void);
+ extern "C" int Host_WindowMode(void);
+ extern "C" int Host_WindowHeadless(void);
+ extern "C" void Host_SetWindowMode(int mode);
+@@ -202,13 +203,6 @@ void display_tab(void) {
+     int renderer = Settings_Get(SET_RENDERER);
+     int sharpen = Settings_Get(SET_SHARPEN);
+     bool smooth = Settings_Get(SET_SMOOTH) != 0;
+-    int fpview = Settings_Get(SET_FPVIEW);
+-    bool fpceil = Settings_Get(SET_FPCEIL) != 0;
+-    bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
+-    int mystery = Settings_Get(SET_FPMYSTERY);
+-    bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
+-    bool boostChests = Settings_Get(SET_FPBOOSTCHEST) != 0;
+-    bool boostBattles = Settings_Get(SET_FPBOOSTBATTLE) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -236,6 +230,57 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("Pictures at the monitor's refresh rate, blended between game frames in the");
+     ImGui::TextDisabled("city, dungeons and battles (GPU renderer). The game itself runs as before.");
++    if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
++        Settings_Set(SET_TITLE_HINT, hint);
++    }
++
++    ImGui::SeparatorText("Renderer");
++    const char *names[] = { "GPU (Vulkan)", "Software" };
++    if (ImGui::Combo("Renderer", &renderer, names, 2)) {
++        Settings_Set(SET_RENDERER, renderer);
++    }
++    ImGui::TextDisabled("Takes effect at the next start. Running now: %s.", Host_RendererName());
++    window_section();
++    for (int id = SET_SCALE; id < SET_COUNT; id++) {
++        if (Settings_Overridden(id)) {
++            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
++                               "Some values come from the command line for this run and are not saved.");
++            break;
++        }
++    }
++}
++
++void bind_button(int bit, int slot, const char *label) {
++    char id[64];
++    bool waiting = g_cap_bit == bit && g_cap_slot == slot;
++
++    snprintf(id, sizeof(id), "%s##b%d_%d", waiting ? "press..." : label, bit, slot);
++    if (ImGui::Button(id, ImVec2(-1, 0))) {
++        g_cap_bit = bit;
++        g_cap_slot = slot;
++        g_msg[0] = 0;
++    }
++    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
++        if (slot < 2) {
++            Settings_SetKey(bit, slot, 0);
++        } else {
++            Settings_SetPad(bit, SET_PAD_NONE);
++        }
++    }
++}
++
++/* Forb's mods (native only): the domain cameras, mystery encounters, LvlLimitBoostr and the
++ * model mods folder, on a tab of their own. */
++void mods_tab(void) {
++    int fpview = Settings_Get(SET_FPVIEW);
++    bool fpceil = Settings_Get(SET_FPCEIL) != 0;
++    bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
++    int mystery = Settings_Get(SET_FPMYSTERY);
++    bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
++    bool boostChests = Settings_Get(SET_FPBOOSTCHEST) != 0;
++    bool boostBattles = Settings_Get(SET_FPBOOSTBATTLE) != 0;
++
++    ImGui::SeparatorText("Domains");
+     {
+         const char *views[] = { Host_FpViewName(0), Host_FpViewName(1), Host_FpViewName(2), Host_FpViewName(3) };
+ 
+@@ -254,6 +299,7 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("The camera and the Digi-Beetle ease round when turning (the game's own");
+     ImGui::TextDisabled("turns and timing stay the same). Off: they snap round as in the original.");
++    ImGui::SeparatorText("Mystery encounters");
+     {
+         /* listed in this order; the setting stores 0 off, 1 one per floor, 2 30 %, 3 all */
+         static const char *const names[] = { "1 per floor", "30% of encounters", "All except bosses", "Off" };
+@@ -278,42 +324,16 @@ void display_tab(void) {
+     if (ImGui::Checkbox("1% of all ? encounters", &boostBattles)) {
+         Host_RequestSetting(SET_FPBOOSTBATTLE, boostBattles);
+     }
+-    if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+-        Settings_Set(SET_TITLE_HINT, hint);
+-    }
+-
+-    ImGui::SeparatorText("Renderer");
+-    const char *names[] = { "GPU (Vulkan)", "Software" };
+-    if (ImGui::Combo("Renderer", &renderer, names, 2)) {
+-        Settings_Set(SET_RENDERER, renderer);
+-    }
+-    ImGui::TextDisabled("Takes effect at the next start. Running now: %s.", Host_RendererName());
+-    window_section();
+-    for (int id = SET_SCALE; id < SET_COUNT; id++) {
+-        if (Settings_Overridden(id)) {
+-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+-                               "Some values come from the command line for this run and are not saved.");
+-            break;
+-        }
+-    }
+-}
+-
+-void bind_button(int bit, int slot, const char *label) {
+-    char id[64];
+-    bool waiting = g_cap_bit == bit && g_cap_slot == slot;
++    ImGui::SeparatorText("Model mods");
++    {
++        int n = Host_ModsCount();
+ 
+-    snprintf(id, sizeof(id), "%s##b%d_%d", waiting ? "press..." : label, bit, slot);
+-    if (ImGui::Button(id, ImVec2(-1, 0))) {
+-        g_cap_bit = bit;
+-        g_cap_slot = slot;
+-        g_msg[0] = 0;
+-    }
+-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+-        if (slot < 2) {
+-            Settings_SetKey(bit, slot, 0);
++        if (n > 0) {
++            ImGui::Text("%d replacement file%s in use from the mods folder.", n, n == 1 ? "" : "s");
+         } else {
+-            Settings_SetPad(bit, SET_PAD_NONE);
++            ImGui::TextDisabled("No model mods in use.");
+         }
++        ImGui::TextDisabled("Files in mods\\ next to dw2.exe replace the game's own (read at start).");
+     }
+ }
+ 
+@@ -541,6 +561,10 @@ void SettingsUi_Draw(void) {
+                 sound_tab();
+                 ImGui::EndTabItem();
+             }
++            if (ImGui::BeginTabItem("Forbs Hidden Mods", NULL, tab_flags("Mods"))) {
++                mods_tab();
++                ImGui::EndTabItem();
++            }
+             ImGui::EndTabBar();
+             g_start_tab[0] = 0;
+         }
+-- 
+2.43.0
+

@@ -1,0 +1,67 @@
+From d7a5c3421858200e22dc5c9f8e0b6c6ba997815d Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 20:12:38 +0000
+Subject: [PATCH 06/26] First-person domains: smaller minimap arrow (about one
+ tile), size in FP_MAP_ARROW
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  |  2 +-
+ src/stag4000/fpview_math.inc   |  1 +
+ src/stag4000/fpview_native.inc | 14 +++++++-------
+ 3 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index 0a05052..f328e67 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -55,7 +55,7 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+ 
+ `src/stag4000/fpview_math.inc`: `FP_EYE` (eye height), `FP_H` (projection, about 80 degrees),
+ `FP_PITCH` (look down), `FP_FOG_START / END`, `STG40_FP_RADIUS` (in `fpview.h`),
+-`FP_TURN_STEP` (turn speed).
++`FP_TURN_STEP` (turn speed), `FP_MAP_ARROW` (minimap arrow size).
+ 
+ ## Known limits
+ 
+diff --git a/src/stag4000/fpview_math.inc b/src/stag4000/fpview_math.inc
+index 19f6e3a..6f9673a 100644
+--- a/src/stag4000/fpview_math.inc
++++ b/src/stag4000/fpview_math.inc
+@@ -18,6 +18,7 @@
+ #define FP_FOG_END (FP_TILE * (STG40_FP_RADIUS - 0.5f))
+ #define FP_FLOOR_BIAS 96        /* OT entries a floor sorts behind its centre (entities on it) */
+ #define FP_SHADOW_BIAS (FP_FLOOR_BIAS - 6)
++#define FP_MAP_ARROW 1.0f       /* minimap arrow size: 1.0 = about one tile long */
+ #define FP_CEILING_SHADE 0x58   /* ceilings a little darker than the floor (0x7F) */
+ #define FP_TURN_STEP 0x100      /* camera yaw per frame (as the beetle turns) */
+ #define FP_PACKET_BYTES 0x18000 /* the floor's own packet area per frame buffer */
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index 79cd6dc..e06bc58 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -598,13 +598,13 @@ void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
+     py = dx;
+     /* the arrow first, then its dark outline: the outline (linked later) draws first */
+     for (pass = 0; pass < 2; pass++) {
+-        k = pass == 0 ? 1.0f : 1.45f;
+-        pts[0] = sx + dx * 1.7f * scale * k;
+-        pts[1] = sy + dy * 1.7f * scale * k;
+-        pts[2] = sx - dx * 1.0f * scale * k + px * 1.1f * scale * k;
+-        pts[3] = sy - dy * 1.0f * scale * k + py * 1.1f * scale * k;
+-        pts[4] = sx - dx * 1.0f * scale * k - px * 1.1f * scale * k;
+-        pts[5] = sy - dy * 1.0f * scale * k - py * 1.1f * scale * k;
++        k = (pass == 0 ? 1.0f : 1.35f) * FP_MAP_ARROW * scale;
++        pts[0] = sx + dx * 0.85f * k;
++        pts[1] = sy + dy * 0.85f * k;
++        pts[2] = sx - dx * 0.5f * k + px * 0.55f * k;
++        pts[3] = sy - dy * 0.5f * k + py * 0.55f * k;
++        pts[4] = sx - dx * 0.5f * k - px * 0.55f * k;
++        pts[5] = sy - dy * 0.5f * k - py * 0.55f * k;
+         if (pass == 0) {
+             Stg40_FpMapTri(ot, pts, (u8)(0xFF * fade / 0xFF), (u8)(0xDC * fade / 0xFF), (u8)(0x28 * fade / 0xFF));
+         } else {
+-- 
+2.43.0
+

@@ -1,0 +1,77 @@
+From abd601da7665958dec667ecdda0afcba5db814df Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 22:55:18 +0000
+Subject: [PATCH 17/26] Model mods: new file numbers (0xE5B..0x7FFF) for new
+ Digimon's models and animations
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/mods.c   |  6 ++++--
+ src/main/cd.c | 14 +++++++++++++-
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/host/mods.c b/host/mods.c
+index 7515c69..78b619f 100644
+--- a/host/mods.c
++++ b/host/mods.c
+@@ -11,7 +11,9 @@
+ 
+ #include "host.h"
+ 
+-#define MOD_IDS 0xE5B
++/* 0x001..0xE5A replace the disc's files; 0xE5B..0x7FFF are new files (a new Digimon's model and
++ * animations: the add-on numbers them 0x1000 + number * 16 + k) */
++#define MOD_IDS 0x8000
+ 
+ static void *mod_data[MOD_IDS];
+ static int mod_size[MOD_IDS];
+@@ -24,7 +26,7 @@ static int hexval(char c) {
+     return -1;
+ }
+ 
+-/* "0A12.bin" -> 0xA12, else -1 */
++/* "0A12.bin" -> 0xA12 ("1AA0.bin" for new files), else -1 */
+ static int mod_id(const char *name) {
+     int id = 0;
+     int i;
+diff --git a/src/main/cd.c b/src/main/cd.c
+index b611a0c..3f11c51 100644
+--- a/src/main/cd.c
++++ b/src/main/cd.c
+@@ -275,6 +275,12 @@ void Cd_FreeUnlockedFiles(void) {
+ }
+ 
+ s32 Cd_IsFileValid(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* model mods: files numbered past the disc's list exist only in mods/ */
++    if (arg0 >= 0xE5B) {
++        return Host_ModFile(arg0, NULL) != NULL;
++    }
++#endif
+     return Cd_FileLba[arg0] != 0;
+ }
+ 
+@@ -290,12 +296,18 @@ s32 Cd_GetFileSectors(s32 arg0) {
+ }
+ 
+ s32 Cd_GetFileLba(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* a new file (mods/ only) has no place on the disc; battles only sort their reads by it */
++    if (arg0 >= 0xE5B) {
++        return 0;
++    }
++#endif
+     return Cd_FileLba[arg0];
+ }
+ 
+ void Cd_GetFilePos(s32 arg0, void *arg1) {
+ #ifdef DW2_NATIVE
+-    CdIntToPos(Cd_FileLba[arg0], arg1);
++    CdIntToPos(arg0 >= 0xE5B ? 0 : Cd_FileLba[arg0], arg1);
+ #else
+     /* One argument: arg1 is still in a1 for CdIntToPos's second parameter. */
+     CdIntToPos(Cd_FileLba[arg0]);
+-- 
+2.43.0
+

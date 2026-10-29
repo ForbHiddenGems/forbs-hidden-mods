@@ -1,0 +1,899 @@
+From d10066aa5241dd1739060fd2efc145e8abe580e5 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Wed, 28 Oct 2026 22:34:37 +0000
+Subject: [PATCH 19/26] Battle digivolution: energy bar, Digivolve command, 3
+ turns as the Champion form
+
+Each party Digimon fills an energy bar by dealing and taking damage. Full, a
+Rookie whose digivolution table names a Champion gets a third command,
+Digivolve (it guards that turn). The Digi-Lab's digivolution effect (0xDD9 /
+0xDDB) plays on the battlefield and it fights as the Champion (model,
+animations, +30 % HP, MP, attack, defense, speed) for 3 turns, then the
+effect plays again and it returns. Every battle end returns it first; the
+save never sees the Champion form. F1 > Forbs Hidden Mods > Digivolve in
+battle (settings "battle_digivolve", on by default). Native only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/host.h                   |   4 +
+ host/main.c                   |   1 +
+ host/sdl.c                    |  14 +
+ host/settings.c               |  10 +-
+ host/settings.h               |   1 +
+ host/settingsui.cpp           |   7 +
+ include/stag3000/evo_native.h |  25 ++
+ src/stag3000/battle.c         |  31 +++
+ src/stag3000/commandinput.c   |   9 +
+ src/stag3000/commandmenu.c    |  26 ++
+ src/stag3000/evo_native.inc   | 491 ++++++++++++++++++++++++++++++++++
+ src/stag3000/fighterhud.c     |   8 +
+ 12 files changed, 623 insertions(+), 4 deletions(-)
+ create mode 100644 include/stag3000/evo_native.h
+ create mode 100644 src/stag3000/evo_native.inc
+
+diff --git a/host/host.h b/host/host.h
+index 3fc8291..889e12b 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -111,6 +111,10 @@ void Host_SetFpBoostChests(int on);
+ int Host_FpBoostChests(void);
+ void Host_SetFpBoostBattles(int on);
+ int Host_FpBoostBattles(void);
++/* FP: battle digivolution, energy bar and Digivolve command (settings "battle_digivolve", on by
++ * default; src/stag3000/evo_native.inc). */
++void Host_SetFpBattleEvo(int on);
++int Host_FpBattleEvo(void);
+ int Host_FpGetNote(int i);
+ void Host_FpSetNote(int i, int v);
+ unsigned int Host_FpRandom(void);
+diff --git a/host/main.c b/host/main.c
+index 07c577f..91e003f 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -541,6 +541,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     Host_SetFpMysteryRare(Settings_Get(SET_FPMYSTRARE));
+     Host_SetFpBoostChests(Settings_Get(SET_FPBOOSTCHEST));
+     Host_SetFpBoostBattles(Settings_Get(SET_FPBOOSTBATTLE));
++    Host_SetFpBattleEvo(Settings_Get(SET_FPBATTLEEVO));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 919d3ee..6de2937 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -116,6 +116,7 @@ static SDL_AtomicInt fp_mystery; /* FP: mystery encounters, SET_FPMYSTERY values
+ static SDL_AtomicInt fp_common;  /* FP: a ? holds a rarer set off (0 = on, the default) */
+ static SDL_AtomicInt fp_noboostchest;  /* FP: 1 % of chests hold a LvlLimitBoostr off (0 = on) */
+ static SDL_AtomicInt fp_noboostbattle; /* FP: 1 % of won ? encounters off (0 = on) */
++static SDL_AtomicInt fp_nobattleevo;   /* FP: battle digivolution off (0 = on) */
+ /* FP: notes the dungeon code keeps here because its own data is reset after every battle
+  * (the overlay reload): per enemy party its mystery roll, and the floor's chosen party. Game
+  * thread only. */
+@@ -570,6 +571,14 @@ int Host_FpBoostBattles(void) {
+     return !SDL_GetAtomicInt(&fp_noboostbattle);
+ }
+ 
++void Host_SetFpBattleEvo(int on) {
++    SDL_SetAtomicInt(&fp_nobattleevo, on == 0);
++}
++
++int Host_FpBattleEvo(void) {
++    return !SDL_GetAtomicInt(&fp_nobattleevo);
++}
++
+ int Host_FpGetNote(int i) {
+     return i >= 0 && i < 16 ? fp_notes[i] : 0;
+ }
+@@ -1164,6 +1173,11 @@ void Host_GameEvents(void) {
+             printf("[host] LvlLimitBoostr from 1%% of ? encounters %s (F1)\n", Host_FpBoostBattles() ? "on" : "off");
+             Settings_Set(SET_FPBOOSTBATTLE, Host_FpBoostBattles());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBATTLEEVO], 0)) != 0 && v - 1 != Host_FpBattleEvo()) {
++            Host_SetFpBattleEvo(v - 1);
++            printf("[host] battle digivolution %s (F1)\n", Host_FpBattleEvo() ? "on" : "off");
++            Settings_Set(SET_FPBATTLEEVO, Host_FpBattleEvo());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+diff --git a/host/settings.c b/host/settings.c
+index d2add6e..ed3523d 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -47,10 +47,11 @@ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+     "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters", "mystery_rare", "boost_chests", "boost_battles",
++    "battle_digivolve",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1, 1, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -622,7 +623,8 @@ void Settings_Load(int no_window) {
+     printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d, mystery_encounters %d, mystery_rare %d\n",
+            Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL), Settings_Get(SET_FPSMOOTHTURN),
+            Settings_Get(SET_FPMYSTERY), Settings_Get(SET_FPMYSTRARE));
+-    printf("[settings] boost_chests %d, boost_battles %d\n", Settings_Get(SET_FPBOOSTCHEST), Settings_Get(SET_FPBOOSTBATTLE));
++    printf("[settings] boost_chests %d, boost_battles %d, battle_digivolve %d\n", Settings_Get(SET_FPBOOSTCHEST),
++           Settings_Get(SET_FPBOOSTBATTLE), Settings_Get(SET_FPBATTLEEVO));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index 63db63e..2628800 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -33,6 +33,7 @@ enum {
+     SET_FPMYSTRARE,   /* 0 / 1: FP a ? holds one of the floor's rarer enemy sets, on by default */
+     SET_FPBOOSTCHEST, /* 0 / 1: FP 1 % of all chests hold a LvlLimitBoostr, on by default */
+     SET_FPBOOSTBATTLE, /* 0 / 1: FP 1 % of won ? encounters give a LvlLimitBoostr, on by default */
++    SET_FPBATTLEEVO,  /* 0 / 1: FP battle digivolution (energy bar, Digivolve command), on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 0d8d248..0b47d82 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -279,6 +279,7 @@ void mods_tab(void) {
+     bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
+     bool boostChests = Settings_Get(SET_FPBOOSTCHEST) != 0;
+     bool boostBattles = Settings_Get(SET_FPBOOSTBATTLE) != 0;
++    bool battleEvo = Settings_Get(SET_FPBATTLEEVO) != 0;
+ 
+     ImGui::SeparatorText("Domains");
+     {
+@@ -324,6 +325,12 @@ void mods_tab(void) {
+     if (ImGui::Checkbox("1% of all ? encounters", &boostBattles)) {
+         Host_RequestSetting(SET_FPBOOSTBATTLE, boostBattles);
+     }
++    ImGui::SeparatorText("Battle digivolution");
++    if (ImGui::Checkbox("Digivolve in battle", &battleEvo)) {
++        Host_RequestSetting(SET_FPBATTLEEVO, battleEvo);
++    }
++    ImGui::TextDisabled("Your Digimon fill an energy bar by dealing and taking damage. Full, a Rookie");
++    ImGui::TextDisabled("can choose Digivolve: it becomes its Champion form for 3 turns.");
+     ImGui::SeparatorText("Model mods");
+     {
+         int n = Host_ModsCount();
+diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
+new file mode 100644
+index 0000000..e13784a
+--- /dev/null
++++ b/include/stag3000/evo_native.h
+@@ -0,0 +1,25 @@
++#ifndef STAG3000_EVO_NATIVE_H
++#define STAG3000_EVO_NATIVE_H
++
++/* Battle digivolution (Forbs Hidden Mods, native only; src/stag3000/evo_native.inc, built into
++ * battle.c). Each party Digimon has an energy bar that fills as it deals and takes damage. Full,
++ * a Rookie that has a Champion form gets a third command, Digivolve: the Digi-Lab's digivolution
++ * effect plays on the battlefield and it fights as its Champion form (model, animations, stronger
++ * stats) for 3 turns, then returns. The battle copy of the Digimon changes; the party in the save
++ * never does (it is reverted before the battle writes back). F1 > Forbs Hidden Mods toggles it. */
++
++#ifdef DW2_NATIVE
++
++#include "common.h"
++
++/* commandmenu.c / commandinput.c: slot 0..2 may digivolve now (shows the third command) */
++s32 Stg30_EvoCanDigivolve(s32 slot);
++/* commandinput.c: the Digimon in `slot` chose Digivolve (1) or the choice was taken back (0) */
++void Stg30_EvoRequest(s32 slot, s32 on);
++/* commandmenu.c: the command's text, glyphs, 0xFF ended */
++extern u8 Stg30_EvoCommandText[];
++/* fighterhud.c: the energy bar of party slot 0..2, under the HUD parts `parts` (drawn first) */
++void Stg30_EvoDrawBar(s32 slot, void *parts);
++
++#endif
++#endif
+diff --git a/src/stag3000/battle.c b/src/stag3000/battle.c
+index de80421..52d18da 100644
+--- a/src/stag3000/battle.c
++++ b/src/stag3000/battle.c
+@@ -9,6 +9,10 @@
+ #include "stag3000/skillmenu.h"
+ #include "stag3000/targetselect.h"
+ 
++#ifdef DW2_NATIVE
++#include "evo_native.inc" /* battle digivolution (Forbs Hidden Mods) */
++#endif
++
+ /* Task callbacks of the battle descriptor (defined further down). */
+ void Stg30_BattleUpdate(Actor *a0);
+ void Stg30_BattleDestroy(Actor *a0);
+@@ -336,6 +340,9 @@ void Stg30_BattleLostUpdate(Stg30ListOwner *a0) {
+ void Stg30_ResetPartyStats(void) {
+     s32 i;
+ 
++#ifdef DW2_NATIVE
++    Stg30_EvoReturnAll(); /* every battle end comes here: the Champion forms go back first */
++#endif
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Battle.digis[i].state >= 3) {
+             Stg30_Battle.digis[i].attack = Save_GameState.elems[i].attack;
+@@ -437,6 +444,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                 Stg30_Battle.defenseBase[n1] = Stg30_Battle.defenseCur[n1] = Stg30_Battle.digis[n1].defense;
+                 Stg30_Battle.speedBase[n1] = Stg30_Battle.speedCur[n1] = Stg30_Battle.digis[n1].speed;
+             }
++#ifdef DW2_NATIVE
++            Stg30_EvoBattleInit();
++#endif
+             w->field_0 = 0;
+             Task_NextState0(a0);
+             break;
+@@ -457,6 +467,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+             switch (a0->stateLevel2) {
+             case 0:
+             default:
++#ifdef DW2_NATIVE
++                if (Stg30_EvoStep(0)) {
++                    break; /* a Champion form returns before the commands */
++                }
++#endif
+                 for (n2 = 0; n2 < 7; n2++) {
+                     Stg30_Battle.turns[n2].noInterrupt = 0;
+                     Stg30_Battle.turns[n2].noCounter = 0;
+@@ -525,6 +540,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+                     }
+                     break;
+                 }
++#ifdef DW2_NATIVE
++                if (Stg30_EvoStep(1)) {
++                    break; /* Digivolve chosen: the effect plays before the turns */
++                }
++#endif
+                 Task_NextState2(a0);
+                 break;
+             case 2:
+@@ -688,6 +708,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                 }
+                 Task_NextState2(a0);
+             case 4:
++#ifdef DW2_NATIVE
++                Stg30_EvoCredit(Stg30_TurnOrderGet(0)); /* energy from this action */
++#endif
+                 m = Stg30_TurnOrderGet(0);
+                 if (m != Stg30_TurnOrderGet(1)) {
+                     if (Stg30_Battle.turns[Stg30_TurnOrderGet(0)].turnType != 5) {
+@@ -738,6 +761,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                     break;
+                 }
+                 Task_SetState1(a0, 1);
++#ifdef DW2_NATIVE
++                Stg30_EvoRoundEnd();
++#endif
+                 Stg30_Battle.interruptActive = 1;
+                 for (n7 = 5; n7 >= 0; n7--) {
+                     Stg30_Battle.turns[n7].turnType = 0;
+@@ -759,6 +785,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+ void Stg30_BattleDestroy(Actor *a0) {
+     s32 i;
+ 
++#ifdef DW2_NATIVE
++    for (i = 0; i < 3; i++) {
++        Stg30_EvoReturnData(i); /* never into the save as a Champion form */
++    }
++#endif
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Battle.digis[i].state >= 3) {
+             Save_GameState.elems[i] = Stg30_Battle.digis[i];
+diff --git a/src/stag3000/commandinput.c b/src/stag3000/commandinput.c
+index a74dbf0..c49a574 100644
+--- a/src/stag3000/commandinput.c
++++ b/src/stag3000/commandinput.c
+@@ -3,6 +3,9 @@
+ #include "stag3000/banner.h"
+ #include "stag3000/fightbg.h"
+ #include "stag3000/actionload.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_CommandInputTask(Actor *a0);
+@@ -181,12 +184,18 @@ void Stg30_CommandInputTask(Actor *a0) {
+                         r = Stg30_TargetPrev(0, w->field_0, 0, 0);
+                         w->field_0 = r;
+                         Stg30_Battle.turns[r].turnType = 0;
++#ifdef DW2_NATIVE
++                        Stg30_EvoRequest(r, 0);
++#endif
+                         Task_SetState1(a0, 2);
+                         break;
+                     }
+                     Task_SetState1(a0, 0);
+                     break;
+                 }
++#ifdef DW2_NATIVE
++                Stg30_EvoRequest(w->field_0, Stg30_Battle.menuChoice == 2); /* Digivolve: it guards */
++#endif
+                 if (Stg30_Battle.menuChoice == 0) {
+                     Task_NextState2(a0);
+                     break;
+diff --git a/src/stag3000/commandmenu.c b/src/stag3000/commandmenu.c
+index f23b69a..180d063 100644
+--- a/src/stag3000/commandmenu.c
++++ b/src/stag3000/commandmenu.c
+@@ -3,6 +3,9 @@
+ #include "stag3000/banner.h"
+ #include "stag3000/fightbg.h"
+ #include "stag3000/actionload.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_CommandMenuUpdate(Actor *a0);
+@@ -70,7 +73,12 @@ void Stg30_CommandMenuUpdate(Actor *a0) {
+                         Snd_PlayById(0xC, 0);
+                         break;
+                     }
++#ifdef DW2_NATIVE
++                    /* battle digivolution: a third command when the energy bar is full */
++                    if (Stg30_CommandMenuCursor == (Stg30_EvoCanDigivolve(Stg30_Battle.inputSlot) ? 2 : 1)) break;
++#else
+                     if (Stg30_CommandMenuCursor == 1) break;
++#endif
+                     Stg30_CommandMenuCursor++;
+                     Snd_PlayById(0xC, 0);
+                     break;
+@@ -134,6 +142,24 @@ void Stg30_CommandMenuUpdate(Actor *a0) {
+                     pos.lo = 0x16;
+                     Text_OpenById(text, i + 5, Stg30_CommandMenuCursor != i, pos);
+                 }
++#ifdef DW2_NATIVE
++                if (Stg30_EvoCanDigivolve(Stg30_Battle.inputSlot)) {
++                    args.text = (s32)(sptr)Stg30_EvoCommandText;
++                    args.color = Stg30_CommandMenuCursor != 2;
++                    args.x = 0x16;
++                    args.bigFont = 0;
++                    args.y = 2 * 11 + 0x3C;
++                    args.charDelay = 0;
++                    args.charAdvance = 0;
++                    args.lineAdvance = 0;
++                    Text_Open(&w->text[3], &args);
++                } else {
++                    Text_Close(&w->text[3]);
++                    if (Stg30_CommandMenuCursor > 1) {
++                        Stg30_CommandMenuCursor = 1;
++                    }
++                }
++#endif
+             }
+             break;
+         }
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+new file mode 100644
+index 0000000..f84a607
+--- /dev/null
++++ b/src/stag3000/evo_native.inc
+@@ -0,0 +1,491 @@
++/* Battle digivolution (Forbs Hidden Mods, native only; include/stag3000/evo_native.h).
++ * Included by battle.c under DW2_NATIVE.
++ *
++ * Energy: 0..EVO_MAX per party slot, charged after every action from the HP lost since the last
++ * one: taking damage (EVO_TAKE for a whole max HP), dealing it (EVO_DEAL for a whole enemy max HP)
++ * and EVO_ACT for having had a turn. Full, a Rookie whose digivolution table names a Champion
++ * (Digi_GetEvolutionTarget at its DP) can choose Digivolve: that is its turn (it guards, turn type
++ * 5). After the commands, before the turns run, the Digi-Lab's effect (model 0xDD9, animation 0xDDB,
++ * as Stg20_LabDigivolve) plays on it and halfway through it becomes the Champion: battle copy
++ * digiId, the fighter's model and animations, HP / MP and attack / defense / speed up by EVO_BOOST
++ * percent. It fights 3 turns like that; at the start of the round after, the effect plays again and
++ * it returns, keeping the damage it took (its HP is never brought below 1 by the return). The end of
++ * the battle (won, lost, escaped) returns it at once, before the battle writes the party back. */
++
++#include <stdio.h>
++
++#include "stag3000/evo_native.h"
++
++extern u8 Digi_GetEvolutionTarget(s32 id, s32 val);
++extern void Mem_Free(ActorWork *arg0);
++extern s32 Cd_GetFileSync(s32 arg0);
++
++#define EVO_MAX 100
++#define EVO_TAKE 60  /* energy for losing a whole max HP */
++#define EVO_DEAL 45  /* energy for taking a whole max HP from enemies */
++#define EVO_ACT 4    /* energy for having had a turn */
++#define EVO_TURNS 3  /* turns it fights in the Champion form */
++#define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the Champion form */
++#define EVO_FX_MODEL 0xDD9
++#define EVO_FX_ANIM 0xDDB
++#define EVO_FX_FRAMES 0x78
++#define EVO_SWAP_AT 0x3C /* frame of the effect at which the form changes */
++
++typedef struct {
++    s32 energy;
++    s32 requested;  /* chose Digivolve this round */
++    s32 turnsLeft;  /* > 0: in the Champion form; rounds still to end */
++    s32 revert;     /* return at the start of the next round */
++    /* the Rookie it was */
++    s32 fromId;
++    s32 hpBonus;
++    s32 mpBonus;
++    s16 maxHp;
++    s16 maxMp;
++    s16 attack;
++    s16 defense;
++    s16 speed;
++} Stg30Evo;
++
++static Stg30Evo Stg30_Evo[3];
++static s16 Stg30_EvoHpSeen[6];
++static s32 Stg30_EvoFxSlot;
++static s32 Stg30_EvoSeqSlot = -1; /* party slot whose effect is playing, -1 none */
++static s32 Stg30_EvoSeqTimer;
++static s32 Stg30_EvoSeqBack;      /* the effect returns it (1) or digivolves it (0) */
++static s32 Stg30_EvoSeqSwapped;
++
++/* "Digivolve" */
++u8 Stg30_EvoCommandText[] = { 0x0D, 0x2C, 0x2A, 0x2C, 0x39, 0x32, 0x2F, 0x39, 0x28, 0xFF };
++
++typedef struct {
++    s32 modelFileId;
++    s32 animFileId;
++    s32 x;
++    s32 y;
++    s32 z;
++    s32 rotY;
++    s32 duration;
++} Stg30EvoFxArgs; /* Fx_ModelInit's 7 words (Stg20WarpFx) */
++
++static s32 Stg30_EvoTarget(s32 slot) {
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++    s32 t;
++
++    if (d->state < 3 || d->digiId == 0 || Digi_GetRank(d->digiId) != 0) {
++        return 0; /* only Rookies, for now */
++    }
++    t = Digi_GetEvolutionTarget(d->digiId, d->dp);
++    if (t == 0 || Digi_GetRank(t) != 1 || Digi_GetModelFile(t) <= 0) {
++        return 0;
++    }
++    return t;
++}
++
++s32 Stg30_EvoCanDigivolve(s32 slot) {
++    if (!Host_FpBattleEvo() || slot < 0 || slot >= 3) {
++        return 0;
++    }
++    return Stg30_Evo[slot].energy >= EVO_MAX && Stg30_Evo[slot].turnsLeft == 0 && !Stg30_Evo[slot].revert &&
++           Stg30_Battle.digis[slot].hp != 0 && Stg30_EvoTarget(slot) != 0;
++}
++
++void Stg30_EvoRequest(s32 slot, s32 on) {
++    if (slot >= 0 && slot < 3) {
++        Stg30_Evo[slot].requested = on && Stg30_EvoCanDigivolve(slot);
++    }
++}
++
++static void Stg30_EvoSeenNow(void) {
++    s32 i;
++
++    for (i = 0; i < 6; i++) {
++        Stg30_EvoHpSeen[i] = Stg30_Battle.digis[i].hp;
++    }
++}
++
++static void Stg30_EvoBattleInit(void) {
++    Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
++    Stg30_EvoFxSlot = 0;
++    Stg30_EvoSeqSlot = -1;
++    Stg30_EvoSeenNow();
++}
++
++static void Stg30_EvoAdd(s32 slot, s32 v) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++
++    if (v <= 0 || e->turnsLeft != 0 || e->revert || Stg30_EvoTarget(slot) == 0) {
++        return;
++    }
++    e->energy += v;
++    if (e->energy > EVO_MAX) {
++        e->energy = EVO_MAX;
++    }
++}
++
++/* After an action (battle.c, before the turn order moves on): charge from the HP lost since. */
++static void Stg30_EvoCredit(s32 actor) {
++    s32 dealt = 0;
++    s32 lost;
++    s32 i;
++
++    if (!Host_FpBattleEvo()) {
++        Stg30_EvoSeenNow();
++        return;
++    }
++    for (i = 0; i < 6; i++) {
++        DigiRosterEntry *d = &Stg30_Battle.digis[i];
++
++        lost = Stg30_EvoHpSeen[i] - d->hp;
++        if (lost <= 0 || d->maxHp <= 0) {
++            continue;
++        }
++        if (i < 3) {
++            Stg30_EvoAdd(i, (lost * EVO_TAKE + d->maxHp - 1) / d->maxHp);
++        } else {
++            dealt += (lost * EVO_DEAL + d->maxHp - 1) / d->maxHp;
++        }
++    }
++    if (actor >= 0 && actor < 3 && Stg30_Battle.digis[actor].hp != 0) {
++        Stg30_EvoAdd(actor, dealt + EVO_ACT);
++    }
++    Stg30_EvoSeenNow();
++}
++
++static Actor *Stg30_EvoFighter(s32 slot) {
++    return (Actor *)Task_FindFirst(0x509, -1, slot);
++}
++
++/* The fighter's model and animations become those of digiId: its model is built again (the old
++ * one's bone and vertex buffers are sized for the old model). */
++static void Stg30_EvoSwapModel(s32 slot, s32 digiId) {
++    Actor *a = Stg30_EvoFighter(slot);
++    Stg30FighterWork *w;
++    ActorModel *m;
++    Stg30ModelTint *t;
++
++    if (a == NULL) {
++        return;
++    }
++    w = (Stg30FighterWork *)a->work;
++    m = a->model;
++    if (m != NULL) {
++        if (m->screenXY != NULL) {
++            Mem_Free((ActorWork *)m->screenXY);
++        }
++        if (m->vertOtz != NULL) {
++            Mem_Free((ActorWork *)m->vertOtz);
++        }
++        if (m->vertColors != NULL) {
++            Mem_Free((ActorWork *)m->vertColors);
++        }
++        if (m->bones != NULL) {
++            Mem_Free((ActorWork *)m->bones);
++        }
++        Mem_Free((ActorWork *)m);
++        a->model = NULL;
++    }
++    a->digiId = digiId;
++    w->modelFile = Digi_GetModelFile(digiId);
++    Cd_GetFileSync(w->modelFile);
++    Cd_GetFileSync(Digi_GetAnimFile(digiId, 0));
++    t = (Stg30ModelTint *)Gfx_AttachModel(a, w->modelFile);
++    t->otIndex = 3;
++    t->flatR = t->flatG = t->flatB = 0x80;
++    t->clutRow = 0;
++    t->tpageBits = 0;
++    w->drawTex = 1;
++    w->drawWire = 0;
++    w->color.r = w->color.g = w->color.b = 0;
++    w->anim = -1;
++    if (Stg30_Battle.digis[slot].hp == 0) {
++        Stg30_FighterSetAnim(a, 0x64); /* stays down */
++    } else {
++        Stg30_FighterSetAnim(a, 0);
++    }
++}
++
++static s16 Stg30_EvoUp(s32 v) {
++    v += v * EVO_BOOST / 100;
++    return (s16)(v > 999 ? 999 : v);
++}
++
++static s16 Stg30_EvoDown(s32 v) {
++    v = v * 100 / (100 + EVO_BOOST);
++    return (s16)(v < 1 ? 1 : v);
++}
++
++static void Stg30_EvoBecome(s32 slot) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++    s32 t = Stg30_EvoTarget(slot);
++    s16 v;
++
++    if (t == 0) {
++        return;
++    }
++    e->fromId = d->digiId;
++    e->maxHp = d->maxHp;
++    e->maxMp = d->maxMp;
++    e->attack = Stg30_Battle.attackBase[slot];
++    e->defense = Stg30_Battle.defenseBase[slot];
++    e->speed = Stg30_Battle.speedBase[slot];
++    d->digiId = t;
++    v = Stg30_EvoUp(d->maxHp);
++    e->hpBonus = v - d->maxHp;
++    d->maxHp = v;
++    d->hp = d->hp + e->hpBonus > d->maxHp ? d->maxHp : d->hp + e->hpBonus;
++    v = Stg30_EvoUp(d->maxMp);
++    e->mpBonus = v - d->maxMp;
++    d->maxMp = v;
++    d->mp = d->mp + e->mpBonus > d->maxMp ? d->maxMp : d->mp + e->mpBonus;
++    Stg30_Battle.attackBase[slot] = Stg30_EvoUp(Stg30_Battle.attackBase[slot]);
++    Stg30_Battle.defenseBase[slot] = Stg30_EvoUp(Stg30_Battle.defenseBase[slot]);
++    Stg30_Battle.speedBase[slot] = Stg30_EvoUp(Stg30_Battle.speedBase[slot]);
++    Stg30_Battle.attackCur[slot] = Stg30_EvoUp(Stg30_Battle.attackCur[slot]);
++    Stg30_Battle.defenseCur[slot] = Stg30_EvoUp(Stg30_Battle.defenseCur[slot]);
++    Stg30_Battle.speedCur[slot] = Stg30_EvoUp(Stg30_Battle.speedCur[slot]);
++    d->attack = Stg30_Battle.attackCur[slot];
++    d->defense = Stg30_Battle.defenseCur[slot];
++    d->speed = Stg30_Battle.speedCur[slot];
++    e->energy = 0;
++    e->requested = 0;
++    e->turnsLeft = EVO_TURNS + 1; /* the round it digivolves in (it guards) ends first */
++    e->revert = 0;
++    Stg30_EvoHpSeen[slot] = d->hp;
++    printf("[evo] slot %d digivolves: %d -> %d\n", slot, e->fromId, t);
++}
++
++/* Back to the Rookie: data only (the end of the battle calls this for every slot). */
++static void Stg30_EvoReturnData(s32 slot) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++
++    if (e->turnsLeft == 0 && !e->revert) {
++        return;
++    }
++    d->digiId = (u8)e->fromId;
++    d->maxHp = e->maxHp;
++    if (d->hp != 0) {
++        d->hp -= e->hpBonus;
++        if (d->hp < 1) {
++            d->hp = 1;
++        }
++        if (d->hp > d->maxHp) {
++            d->hp = d->maxHp;
++        }
++    }
++    d->maxMp = e->maxMp;
++    d->mp -= e->mpBonus;
++    if (d->mp < 0) {
++        d->mp = 0;
++    }
++    if (d->mp > d->maxMp) {
++        d->mp = d->maxMp;
++    }
++    Stg30_Battle.attackBase[slot] = e->attack;
++    Stg30_Battle.defenseBase[slot] = e->defense;
++    Stg30_Battle.speedBase[slot] = e->speed;
++    Stg30_Battle.attackCur[slot] = Stg30_EvoDown(Stg30_Battle.attackCur[slot]);
++    Stg30_Battle.defenseCur[slot] = Stg30_EvoDown(Stg30_Battle.defenseCur[slot]);
++    Stg30_Battle.speedCur[slot] = Stg30_EvoDown(Stg30_Battle.speedCur[slot]);
++    d->attack = Stg30_Battle.attackCur[slot];
++    d->defense = Stg30_Battle.defenseCur[slot];
++    d->speed = Stg30_Battle.speedCur[slot];
++    e->turnsLeft = 0;
++    e->revert = 0;
++    e->energy = 0;
++    Stg30_EvoHpSeen[slot] = d->hp;
++    printf("[evo] slot %d returns to %d\n", slot, e->fromId);
++}
++
++/* The end of the battle: every Champion form back at once (model too: the victory poses use the
++ * Rookie's animations), before the party is written back. */
++static void Stg30_EvoReturnAll(void) {
++    s32 i;
++
++    if (Stg30_EvoFxSlot != 0) {
++        Task_Destroy(&Stg30_EvoFxSlot);
++    }
++    Stg30_EvoSeqSlot = -1;
++    for (i = 0; i < 3; i++) {
++        if (Stg30_Evo[i].turnsLeft != 0 || Stg30_Evo[i].revert) {
++            Stg30_EvoReturnData(i);
++            Stg30_EvoSwapModel(i, Stg30_Battle.digis[i].digiId);
++        }
++        Stg30_Evo[i].requested = 0;
++    }
++}
++
++/* The end of a round (battle.c): count the Champion forms' turns. */
++static void Stg30_EvoRoundEnd(void) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        Stg30Evo *e = &Stg30_Evo[i];
++
++        e->requested = 0;
++        if (e->turnsLeft != 0) {
++            if (--e->turnsLeft == 0 || Stg30_Battle.digis[i].hp == 0) {
++                e->turnsLeft = 1; /* still the Champion until the effect returns it */
++                e->revert = 1;
++            }
++        }
++    }
++}
++
++/* Runs the effect for one slot; 1 while it plays. */
++static s32 Stg30_EvoSequence(void) {
++    s32 slot = Stg30_EvoSeqSlot;
++    Actor *f = Stg30_EvoFighter(slot);
++    Stg30FighterWork *w;
++    Stg30EvoFxArgs args;
++    Actor *fx;
++
++    if (f == NULL) {
++        Stg30_EvoSeqSlot = -1;
++        return 0;
++    }
++    w = (Stg30FighterWork *)f->work;
++    if (Stg30_EvoSeqTimer == 0) {
++        Stg30_SetCameraShot(slot + 2);
++        Cd_GetFileSync(EVO_FX_MODEL);
++        Cd_GetFileSync(EVO_FX_ANIM);
++        args.modelFileId = EVO_FX_MODEL;
++        args.animFileId = EVO_FX_ANIM;
++        args.x = w->homeX;
++        args.y = w->homeY;
++        args.z = w->homeZ;
++        args.rotY = w->facing;
++        args.duration = EVO_FX_FRAMES;
++        Task_Create(7, &Stg30_EvoFxSlot, (s32)(sptr)&args);
++        Stg30_EvoSeqSwapped = 0;
++        Snd_PlayById(0xA, 0);
++    }
++    Stg30_EvoSeqTimer++;
++    if (!Stg30_EvoSeqSwapped && Stg30_EvoSeqTimer >= EVO_SWAP_AT) {
++        Stg30_EvoSeqSwapped = 1;
++        if (Stg30_EvoSeqBack) {
++            Stg30_EvoReturnData(slot);
++        } else {
++            Stg30_EvoBecome(slot);
++        }
++        Stg30_EvoSwapModel(slot, Stg30_Battle.digis[slot].digiId);
++    }
++    fx = (Actor *)P32(Actor, Stg30_EvoFxSlot);
++    if (Stg30_EvoSeqTimer < EVO_FX_FRAMES + 20 && (fx == NULL || fx->stateLevel0 != 3 ||
++                                                   Stg30_EvoSeqTimer < EVO_SWAP_AT + 20)) {
++        return 1;
++    }
++    if (Stg30_EvoFxSlot != 0) {
++        Task_Destroy(&Stg30_EvoFxSlot);
++    }
++    Stg30_SetCameraShot(1);
++    Stg30_EvoSeqSlot = -1;
++    return 0;
++}
++
++/* battle.c: phase 0 at the start of a round (returns), phase 1 after the commands (digivolves).
++ * 1 while an effect plays (the battle waits). */
++static s32 Stg30_EvoStep(s32 phase) {
++    s32 i;
++
++    if (Stg30_EvoSeqSlot >= 0 && Stg30_EvoSequence()) {
++        return 1;
++    }
++    for (i = 0; i < 3; i++) { /* the next one, if two or three digivolve at once */
++        Stg30Evo *e = &Stg30_Evo[i];
++
++        if (phase == 0 && e->revert) {
++            Stg30_EvoSeqBack = 1;
++        } else if (phase == 1 && e->requested && Stg30_Battle.turns[i].turnType == 5 &&
++                   Stg30_EvoCanDigivolve(i)) {
++            Stg30_EvoSeqBack = 0;
++        } else {
++            if (phase == 1) {
++                e->requested = 0;
++            }
++            continue;
++        }
++        e->requested = 0;
++        Stg30_EvoSeqSlot = i;
++        Stg30_EvoSeqTimer = 0;
++        return Stg30_EvoSequence();
++    }
++    return 0;
++}
++
++/* ---- the energy bar (fighterhud.c) ---- */
++
++typedef struct {
++    GfxPartOTag tag;
++    u8 r, g, b, code;
++    s16 x, y;
++    u16 w, h;
++} Stg30EvoTile;
++
++static void Stg30_EvoTile(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h, s32 r, s32 g, s32 b) {
++    Stg30EvoTile *p = (Stg30EvoTile *)Sys_State.packet.addr;
++    s32 sx = Sys_State.centerX.s == 0x140; /* as Gfx_DrawPartsEx: 640 wide, 480 high */
++    s32 sy = Sys_State.centerY.s == 0xF0;
++
++    if (w <= 0) {
++        return;
++    }
++    x -= 160; /* 320 x 240 screen to centred coordinates */
++    y -= 120;
++    p->tag.len = 3;
++    p->code = 0x60; /* TILE */
++    p->r = r;
++    p->g = g;
++    p->b = b;
++    p->x = x << sx;
++    p->y = y << sy;
++    p->w = w << sx;
++    p->h = h << sy;
++    p->tag.addr = ot->addr;
++    ot->addr = (u32)(uptr)p;
++    Sys_State.packet.addr = (sptr)(p + 1);
++}
++
++/* The bar's place: above the slot's HUD box, under its name (Stg30_FighterHudNamePos). */
++#define EVO_BAR_X0 17
++#define EVO_BAR_STEP 99
++#define EVO_BAR_Y 197
++#define EVO_BAR_W 84
++#define EVO_BAR_H 3
++
++void Stg30_EvoDrawBar(s32 slot, void *parts) {
++    Stg30Evo *e;
++    GfxPartOTag *ot;
++    s32 x;
++    s32 fill;
++    s32 blink;
++
++    if (!Host_FpBattleEvo() || slot < 0 || slot >= 3 || parts == NULL) {
++        return;
++    }
++    e = &Stg30_Evo[slot];
++    if (e->turnsLeft == 0 && !e->revert && Stg30_EvoTarget(slot) == 0) {
++        return; /* no Champion form to reach */
++    }
++    ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)parts)[0x0B]]; /* the first part's otLayer (Rec1D6B4) */
++    x = EVO_BAR_X0 + slot * EVO_BAR_STEP;
++    /* drawn last = on top: the fill first, then its frame */
++    if (e->turnsLeft != 0 || e->revert) {
++        /* in the Champion form: the turns it has left, light blue */
++        s32 n = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
++
++        fill = EVO_BAR_W * n / EVO_TURNS;
++        Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0x40, 0xC0, 0xFF);
++    } else {
++        fill = EVO_BAR_W * e->energy / EVO_MAX;
++        if (e->energy >= EVO_MAX && Stg30_Battle.digis[slot].hp != 0) {
++            blink = (Sys_State.frameCount >> 3) & 1; /* full: flashes gold and white */
++            Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0xFF, blink ? 0xFF : 0xD0, blink ? 0xFF : 0x20);
++        } else {
++            Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0xFF, 0x80, 0x10);
++        }
++    }
++    Stg30_EvoTile(ot, x - 1, EVO_BAR_Y - 1, EVO_BAR_W + 2, EVO_BAR_H + 2, 0x10, 0x10, 0x20);
++}
+diff --git a/src/stag3000/fighterhud.c b/src/stag3000/fighterhud.c
+index 928efc0..d71cf0d 100644
+--- a/src/stag3000/fighterhud.c
++++ b/src/stag3000/fighterhud.c
+@@ -18,6 +18,9 @@
+ #include "stag3000/fightmsg.h"
+ #include "stag3000/popup.h"
+ #include "stag3000/interruptselect.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_FighterHudInit(Actor *a0, PTR32(Stg30Ref) *args);
+@@ -245,6 +248,11 @@ void Stg30_FighterHudDraw(Actor *a0) {
+         if (a0->param < 3) {
+             Stg30_SetGaugeParts(p, 0x400, d->hp, d->maxHp);
+             Stg30_SetGaugeParts(p, 0x4000, d->mp, d->maxMp);
++#ifdef DW2_NATIVE
++            if (w->openScale == 0x1000) {
++                Stg30_EvoDrawBar(a0->param, p); /* before the parts: drawn over them */
++            }
++#endif
+         } else {
+             Stg30_SetGaugeParts(p, 0x20, d->hp, d->maxHp);
+         }
+-- 
+2.43.0
+

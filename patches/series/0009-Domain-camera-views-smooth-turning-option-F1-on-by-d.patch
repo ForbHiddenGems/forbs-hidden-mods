@@ -1,0 +1,335 @@
+From 0e5e6e972d5790c48bec74723ebee396525a51c9 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 20:52:30 +0000
+Subject: [PATCH 09/26] Domain camera views: smooth turning option (F1, on by
+ default)
+
+The camera yaw and the beetle's drawn rotation ease round when turning in the
+3D views; the game's own heading and turn timing are untouched. Off restores
+the original snap. Setting smooth_turns.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  |  7 ++++-
+ host/host.h                    |  3 ++
+ host/main.c                    |  1 +
+ host/sdl.c                     | 14 +++++++++
+ host/settings.c                | 11 +++----
+ host/settings.h                |  1 +
+ host/settingsui.cpp            |  6 ++++
+ include/stag4000/fpview.h      |  2 ++
+ src/stag4000/fpview_math.inc   |  2 ++
+ src/stag4000/fpview_native.inc | 55 +++++++++++++++++++++++++++-------
+ src/stag4000/obj.c             |  5 +++-
+ 11 files changed, 89 insertions(+), 18 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index ff82c3b..66b5f98 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -11,7 +11,8 @@ smoothly between them. **F4** cycles the views, also in **F1 > Display > Domain
+ Each press swoops the camera to the next view in under a second (height, distance, tilt,
+ field of view and rotation blend together; the overhead view's squashed tile rows unsquash
+ on the way). The choice is saved as `domain_view` in `settings.ini` (0..3); `--fpview`
+-starts in first person. **F10** turns ceilings on and off.
++starts in first person. **F10** turns ceilings on and off. **Smooth turning** (F1 > Display,
++on by default, `smooth_turns`) eases the camera and the beetle round when it turns.
+ 
+ ## Controls in the 3D views
+ 
+@@ -41,6 +42,10 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   pivot over the beetle, a distance back from it, yaw, pitch, projection, tile-row depth and
+   fog (`Stg40FpPose`); a transition blends the pose it started from into the live target
+   pose, eased. Classic settled: the retail renderer and camera, untouched.
++- **Smooth turning**: the camera yaw and the beetle's drawn rotation (`Stg40_FpDrawHeading`)
++  ease toward the game's heading, 20% of the way left each frame (`FP_TURN_EASE`). The game's
++  own heading, turn timing and move logic are untouched. Off: the original snap (the camera
++  at the game's 0x100 a frame).
+ - **Battle exits and floor changes**: `Stg40_FpReset` (each floor set-up) drops any transition;
+   the camera snaps to the chosen view at its next use. The overlay reload after a battle
+   resets this state too.
+diff --git a/host/host.h b/host/host.h
+index 5a2660f..d9cdc64 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -93,6 +93,9 @@ const char *Host_FpViewName(int view);
+ /* FP: ceilings over walled domains (F10 or F1, settings "fp_ceilings", off by default). */
+ void Host_SetFpCeiling(int on);
+ int Host_FpCeiling(void);
++/* FP: smooth turning in the 3D domain views (F1, settings "smooth_turns", on by default). */
++void Host_SetFpSmoothTurn(int on);
++int Host_FpSmoothTurn(void);
+ /* The HD renderer draws precise, perspective-correct polygons now (no wobble or smooth frames). */
+ int Host_PreciseGeometry(void);
+ /* PG.3, for the game C (DW2_NATIVE): extra screen pixels on each side of a picture `width` wide
+diff --git a/host/main.c b/host/main.c
+index 9280c6c..940edbc 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -536,6 +536,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     }
+     Host_SetFpView(Settings_Get(SET_FPVIEW)); /* FP domain camera, --fpview = first person */
+     Host_SetFpCeiling(Settings_Get(SET_FPCEIL));
++    Host_SetFpSmoothTurn(Settings_Get(SET_FPSMOOTHTURN));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 4dc4e76..f8bccd8 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -111,6 +111,7 @@ static const char *volatile quit_why = "window closed";
+ static SDL_AtomicInt smooth_on;  /* PR.34: smooth frames active (game side sets it) */
+ static SDL_AtomicInt fp_view;    /* FP: domain camera 0..3 (F4 cycles), read by the game C */
+ static SDL_AtomicInt fp_ceil;    /* FP: ceilings on (F10; off by default) */
++static SDL_AtomicInt fp_rough;   /* FP: smooth turning off (0 = on, the default) */
+ static int shown_vsync;          /* main thread: the renderer's vsync */
+ static int vsync_ok = 1;         /* main thread: vsync could be turned on */
+ static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
+@@ -528,6 +529,14 @@ int Host_FpCeiling(void) {
+     return SDL_GetAtomicInt(&fp_ceil);
+ }
+ 
++void Host_SetFpSmoothTurn(int on) {
++    SDL_SetAtomicInt(&fp_rough, on == 0);
++}
++
++int Host_FpSmoothTurn(void) {
++    return !SDL_GetAtomicInt(&fp_rough);
++}
++
+ void Host_SmoothLattice(int px, int py, int pz) {
+     Pgxp_Lattice(px, py, pz);
+ }
+@@ -1067,6 +1076,11 @@ void Host_GameEvents(void) {
+             printf("[host] first-person ceilings %s (F1)\n", Host_FpCeiling() ? "on" : "off");
+             Settings_Set(SET_FPCEIL, Host_FpCeiling());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPSMOOTHTURN], 0)) != 0 && v - 1 != Host_FpSmoothTurn()) {
++            Host_SetFpSmoothTurn(v - 1);
++            printf("[host] smooth turning %s (F1)\n", Host_FpSmoothTurn() ? "on" : "off");
++            Settings_Set(SET_FPSMOOTHTURN, Host_FpSmoothTurn());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+diff --git a/host/settings.c b/host/settings.c
+index 8971da5..da553f5 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,11 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu", "domain_view", "fp_ceilings",
++    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -619,7 +619,8 @@ void Settings_Load(int no_window) {
+     printf("[settings] sharpen %d, title_hint %d, speed %d, update_check %d, smooth %d, select_hold_menu %d\n",
+            Settings_Get(SET_SHARPEN), Settings_Get(SET_TITLE_HINT), Settings_Get(SET_SPEED),
+            Settings_Get(SET_UPDATE_CHECK), Settings_Get(SET_SMOOTH), Settings_Get(SET_SELECT_HOLD));
+-    printf("[settings] domain_view %d, fp_ceilings %d\n", Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL));
++    printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d\n", Settings_Get(SET_FPVIEW),
++           Settings_Get(SET_FPCEIL), Settings_Get(SET_FPSMOOTHTURN));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index ec2fdda..0080beb 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -28,6 +28,7 @@ enum {
+     SET_SELECT_HOLD,  /* 0 / 1: PR.38 Select held 1 s opens F1 (issue #5), on by default */
+     SET_FPVIEW,       /* 0..3: FP domain camera (F4): classic, high chase, low chase, first person */
+     SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains (F10), off by default */
++    SET_FPSMOOTHTURN, /* 0 / 1: FP smooth turning in the 3D domain views, on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 8b7660d..5505b5f 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -204,6 +204,7 @@ void display_tab(void) {
+     bool smooth = Settings_Get(SET_SMOOTH) != 0;
+     int fpview = Settings_Get(SET_FPVIEW);
+     bool fpceil = Settings_Get(SET_FPCEIL) != 0;
++    bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -244,6 +245,11 @@ void display_tab(void) {
+         Host_RequestSetting(SET_FPCEIL, fpceil);
+     }
+     ImGui::TextDisabled("A roof with the floor's own texture over walled domains.");
++    if (ImGui::Checkbox("Smooth turning in 3D views", &fpturn)) {
++        Host_RequestSetting(SET_FPSMOOTHTURN, fpturn);
++    }
++    ImGui::TextDisabled("The camera and the Digi-Beetle ease round when turning (the game's own");
++    ImGui::TextDisabled("turns and timing stay the same). Off: they snap round as in the original.");
+     if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+         Settings_Set(SET_TITLE_HINT, hint);
+     }
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+index 98f3f86..bb07492 100644
+--- a/include/stag4000/fpview.h
++++ b/include/stag4000/fpview.h
+@@ -31,6 +31,8 @@ s32 Stg40_FpOutOfRange(s32 posX, s32 posY);
+ /* The entity / actor is the player, hidden while the camera is at its eye. */
+ s32 Stg40_FpHidesEnt(void *ent);
+ s32 Stg40_FpHidesActor(void *actor);
++/* The rotation to draw an entity with (the beetle eases round with smooth turning). */
++s32 Stg40_FpDrawHeading(void *ent, s32 rot);
+ /* The texture animation of a hidden model (sets the texture slot the draw would set). */
+ void Stg40_FpAnimateHiddenTex(void *actor);
+ /* The pad as an absolute octant 0..7 for Stg40_PlayerTryMove, or -1 = no step this frame
+diff --git a/src/stag4000/fpview_math.inc b/src/stag4000/fpview_math.inc
+index a66fbfa..3962edf 100644
+--- a/src/stag4000/fpview_math.inc
++++ b/src/stag4000/fpview_math.inc
+@@ -37,6 +37,8 @@
+ #define FP_MAP_ARROW 1.0f       /* minimap pointer size: 1.0 = 0.8 of a tile long */
+ #define FP_CEILING_SHADE 0x58   /* ceilings a little darker than the floor (0x7F) */
+ #define FP_TURN_STEP 0x100      /* camera yaw per frame (as the beetle turns) */
++#define FP_TURN_EASE 0.2f       /* smooth turning: share of the way left covered per frame */
++#define FP_TURN_SNAP 6          /* smooth turning: closer than this (of 0x1000) it lands */
+ #define FP_PACKET_BYTES 0x40000 /* the floor's own packet area per frame buffer */
+ #define FP_MAXV 12              /* vertices of a clipped polygon (4 + 5 planes, rounded up) */
+ 
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index 37b90a0..2fbccee 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -27,6 +27,7 @@ static s32 Stg40_FpSynced;  /* facing / yaw taken from the beetle */
+ static void *Stg40_FpEnt;   /* the entity they were taken from */
+ static s32 Stg40_FpFacing;  /* octant the view faces, 0..7 (retail octants: 0 down, 2 left ...) */
+ static s32 Stg40_FpYaw;     /* camera yaw, 0..0xFFF, chases Stg40_FpFacing << 9 */
++static s32 Stg40_FpBodyYaw; /* the beetle's drawn rotation, 0..0xFFF (smooth turning) */
+ 
+ static s32 Stg40_FpInit;    /* the state below is set up for this dungeon visit */
+ static s32 Stg40_FpTo;      /* the view shown, or being moved to */
+@@ -131,6 +132,7 @@ static s32 Stg40_FpPoll(void) {
+         Stg40_FpT = 1.0f;
+         Stg40_FpCtrl = mode != FP_VIEW_CLASSIC;
+         Stg40_FpSync(Stg40_RootState->playerEnt);
++        Stg40_FpBodyYaw = (u16)Stg40_RootState->playerEnt->heading & 0xFFF;
+         Stg40_FpLivePose(mode, &Stg40_FpCur);
+         {
+             float eye[3];
+@@ -199,6 +201,35 @@ static s32 Stg40_FpInBeetle(void) {
+     return Stg40_FpActive() && Stg40_FpEyeXZ < FP_HIDE_DIST;
+ }
+ 
++/* The rotation to draw an entity with: the beetle's eased one in the 3D views with smooth
++ * turning, else the game's. */
++s32 Stg40_FpDrawHeading(void *ent, s32 rot) {
++    if (Stg40_FpActive() && Host_FpSmoothTurn() && ent == (void *)Stg40_RootState->playerEnt) {
++        return Stg40_FpBodyYaw;
++    }
++    return rot;
++}
++
++/* angle *a (0..0xFFF) toward target: eased (smooth turning) or at most `step` a frame. */
++static void Stg40_FpTurnToward(s32 *a, s32 target, s32 smooth, s32 step) {
++    s32 d = ((target - *a + 0x800) & 0xFFF) - 0x800; /* shortest way, -0x800..0x7FF */
++    s32 m;
++
++    if (smooth) {
++        if (d <= FP_TURN_SNAP && d >= -FP_TURN_SNAP) {
++            m = d;
++        } else {
++            m = (s32)lrintf(d * FP_TURN_EASE);
++            if (m == 0) {
++                m = d > 0 ? 1 : -1;
++            }
++        }
++    } else {
++        m = d > step ? step : d < -step ? -step : d;
++    }
++    *a = (*a + m) & 0xFFF;
++}
++
+ s32 Stg40_FpHidesEnt(void *ent) {
+     return Stg40_FpInBeetle() && ent == (void *)Stg40_RootState->playerEnt;
+ }
+@@ -273,7 +304,7 @@ void Stg40_FpCameraTick(void *cameraWork) {
+     float eye[3];
+     float f[3];
+     s32 target;
+-    s32 d;
++    s32 smooth;
+     s32 i;
+ 
+     if (!Stg40_FpPoll()) {
+@@ -294,23 +325,25 @@ void Stg40_FpCameraTick(void *cameraWork) {
+     Stg40_FpClassic.offZ -= (Stg40_RootState->viewY - Stg40_FpOriginY()) * 32.0f;
+     Stg40_FpClassicOk = 1;
+ 
+-    /* the facing: the beetle's own with the retail controls, the view's with turn-and-move */
++    /* the facing: the beetle's own with the retail controls, the view's with turn-and-move;
++     * the camera turns toward it, eased with smooth turning (the game's own heading and turn
++     * timing are not touched: only the camera and the beetle's drawn rotation ease) */
++    smooth = Host_FpSmoothTurn();
+     if (!Stg40_FpCtrl) {
+         Stg40_FpFacing = ((u16)e->targetHeading >> 9) & 7;
+-        Stg40_FpYaw = (u16)e->heading & 0xFFF;
+         Stg40_FpEnt = e;
+         Stg40_FpSynced = 1;
++        target = (u16)e->heading & 0xFFF;
++        if (smooth && Stg40_FpActive()) {
++            Stg40_FpTurnToward(&Stg40_FpYaw, target, 1, 0);
++        } else {
++            Stg40_FpYaw = target;
++        }
+     } else {
+         Stg40_FpSync(e);
+-        target = Stg40_FpFacing << 9;
+-        d = ((target - Stg40_FpYaw + 0x800) & 0xFFF) - 0x800; /* shortest way, -0x800..0x7FF */
+-        if (d > FP_TURN_STEP) {
+-            d = FP_TURN_STEP;
+-        } else if (d < -FP_TURN_STEP) {
+-            d = -FP_TURN_STEP;
+-        }
+-        Stg40_FpYaw = (Stg40_FpYaw + d) & 0xFFF;
++        Stg40_FpTurnToward(&Stg40_FpYaw, Stg40_FpFacing << 9, smooth, FP_TURN_STEP);
+     }
++    Stg40_FpTurnToward(&Stg40_FpBodyYaw, (u16)e->heading & 0xFFF, smooth, 0x1000);
+ 
+     /* the transition; the controls change when it ends, never half way */
+     if (Stg40_FpT < 1.0f) {
+diff --git a/src/stag4000/obj.c b/src/stag4000/obj.c
+index 7033c41..d58784f 100644
+--- a/src/stag4000/obj.c
++++ b/src/stag4000/obj.c
+@@ -475,7 +475,7 @@ static void Stg40_SideDrawEnt(Actor *a0) {
+     x->posX = (s16)Stg40_FpWorldX(e->loc.posX); /* FP: player-centred, square tiles */
+     x->posZ = (s16)Stg40_FpWorldZ(e->loc.posY);
+     x->posY = -(s16)e->loc.height;
+-    x->rotY = e->heading;
++    x->rotY = Stg40_FpDrawHeading(e, e->heading); /* FP: eased with smooth turning */
+     x->scaleX = e->scaleX;
+     x->scaleY = e->scaleY;
+     x->scaleZ = e->scaleZ;
+@@ -572,6 +572,9 @@ void Stg40_ObjDraw(Actor *a0) {
+         }
+ #endif
+         x->rotY = e->heading;
++#ifdef DW2_NATIVE
++        x->rotY = Stg40_FpDrawHeading(e, x->rotY); /* FP: eased with smooth turning */
++#endif
+         x->scaleX = e->scaleX;
+         x->scaleY = e->scaleY;
+         x->scaleZ = e->scaleZ;
+-- 
+2.43.0
+

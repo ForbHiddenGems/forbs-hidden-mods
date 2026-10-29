@@ -1,0 +1,331 @@
+From e712dbfbc6c287d5b8cc42733b801d02aa2dee8f Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 12:03:33 +0000
+Subject: [PATCH 20/26] Battle digivolution: DP row under the HUD box, the
+ effect actually plays
+
+The energy bar is now a DP row in the HUD's own style: the party boxes are
+raised 10 lines and each gets a row under its name strip with a "DP" label
+and a gauge like HP / MP (green filling, gold and white when Digivolve is
+ready, blue for the Champion form's turns left). The digivolution effect
+(task 7) was created in a slot no task updates, so it never showed and the
+change looked instant; it now runs as a child of the fighter (slot 1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ include/stag3000/evo_native.h |   4 +-
+ src/stag3000/evo_native.inc   | 142 +++++++++++++++++++++++++---------
+ src/stag3000/fighterhud.c     |  26 ++++++-
+ 3 files changed, 133 insertions(+), 39 deletions(-)
+
+diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
+index e13784a..0bbeaae 100644
+--- a/include/stag3000/evo_native.h
++++ b/include/stag3000/evo_native.h
+@@ -18,8 +18,10 @@ s32 Stg30_EvoCanDigivolve(s32 slot);
+ void Stg30_EvoRequest(s32 slot, s32 on);
+ /* commandmenu.c: the command's text, glyphs, 0xFF ended */
+ extern u8 Stg30_EvoCommandText[];
+-/* fighterhud.c: the energy bar of party slot 0..2, under the HUD parts `parts` (drawn first) */
++/* fighterhud.c: the DP row (energy) of party slot 0..2 under its HUD box (HUD parts `parts`;
++ * drawn before them), and how far the party HUD is raised to make room for it (0: off) */
+ void Stg30_EvoDrawBar(s32 slot, void *parts);
++s32 Stg30_EvoHudLift(void);
+ 
+ #endif
+ #endif
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index f84a607..c5de7ef 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -49,7 +49,10 @@ typedef struct {
+ 
+ static Stg30Evo Stg30_Evo[3];
+ static s16 Stg30_EvoHpSeen[6];
+-static s32 Stg30_EvoFxSlot;
++/* The effect runs as a child task of the fighter (its slot 1, which its skill effects use only
++ * during actions): a task is only updated and drawn through its parent. */
++static s32 *Stg30_EvoFxSlot;
++static s32 Stg30_EvoLift; /* party HUD raised by this much for the DP row (0: off this battle) */
+ static s32 Stg30_EvoSeqSlot = -1; /* party slot whose effect is playing, -1 none */
+ static s32 Stg30_EvoSeqTimer;
+ static s32 Stg30_EvoSeqBack;      /* the effect returns it (1) or digivolves it (0) */
+@@ -106,7 +109,8 @@ static void Stg30_EvoSeenNow(void) {
+ 
+ static void Stg30_EvoBattleInit(void) {
+     Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
+-    Stg30_EvoFxSlot = 0;
++    Stg30_EvoFxSlot = NULL;
++    Stg30_EvoLift = Host_FpBattleEvo() ? 10 : 0;
+     Stg30_EvoSeqSlot = -1;
+     Stg30_EvoSeenNow();
+ }
+@@ -304,9 +308,10 @@ static void Stg30_EvoReturnData(s32 slot) {
+ static void Stg30_EvoReturnAll(void) {
+     s32 i;
+ 
+-    if (Stg30_EvoFxSlot != 0) {
+-        Task_Destroy(&Stg30_EvoFxSlot);
++    if (Stg30_EvoFxSlot != NULL && *Stg30_EvoFxSlot != 0) {
++        Task_Destroy(Stg30_EvoFxSlot);
+     }
++    Stg30_EvoFxSlot = NULL;
+     Stg30_EvoSeqSlot = -1;
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Evo[i].turnsLeft != 0 || Stg30_Evo[i].revert) {
+@@ -358,7 +363,8 @@ static s32 Stg30_EvoSequence(void) {
+         args.z = w->homeZ;
+         args.rotY = w->facing;
+         args.duration = EVO_FX_FRAMES;
+-        Task_Create(7, &Stg30_EvoFxSlot, (s32)(sptr)&args);
++        Stg30_EvoFxSlot = &((s32 *)f->u34.children)[1];
++        Task_Create(7, Stg30_EvoFxSlot, (s32)(sptr)&args);
+         Stg30_EvoSeqSwapped = 0;
+         Snd_PlayById(0xA, 0);
+     }
+@@ -372,14 +378,15 @@ static s32 Stg30_EvoSequence(void) {
+         }
+         Stg30_EvoSwapModel(slot, Stg30_Battle.digis[slot].digiId);
+     }
+-    fx = (Actor *)P32(Actor, Stg30_EvoFxSlot);
++    fx = Stg30_EvoFxSlot != NULL ? (Actor *)P32(Actor, *Stg30_EvoFxSlot) : NULL;
+     if (Stg30_EvoSeqTimer < EVO_FX_FRAMES + 20 && (fx == NULL || fx->stateLevel0 != 3 ||
+                                                    Stg30_EvoSeqTimer < EVO_SWAP_AT + 20)) {
+         return 1;
+     }
+-    if (Stg30_EvoFxSlot != 0) {
+-        Task_Destroy(&Stg30_EvoFxSlot);
++    if (Stg30_EvoFxSlot != NULL && *Stg30_EvoFxSlot != 0) {
++        Task_Destroy(Stg30_EvoFxSlot);
+     }
++    Stg30_EvoFxSlot = NULL;
+     Stg30_SetCameraShot(1);
+     Stg30_EvoSeqSlot = -1;
+     return 0;
+@@ -415,7 +422,7 @@ static s32 Stg30_EvoStep(s32 phase) {
+     return 0;
+ }
+ 
+-/* ---- the energy bar (fighterhud.c) ---- */
++/* ---- the DP row (fighterhud.c) ---- */
+ 
+ typedef struct {
+     GfxPartOTag tag;
+@@ -424,21 +431,21 @@ typedef struct {
+     u16 w, h;
+ } Stg30EvoTile;
+ 
+-static void Stg30_EvoTile(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h, s32 r, s32 g, s32 b) {
++static void Stg30_EvoTile(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h, u32 rgb) {
+     Stg30EvoTile *p = (Stg30EvoTile *)Sys_State.packet.addr;
+     s32 sx = Sys_State.centerX.s == 0x140; /* as Gfx_DrawPartsEx: 640 wide, 480 high */
+     s32 sy = Sys_State.centerY.s == 0xF0;
+ 
+-    if (w <= 0) {
++    if (w <= 0 || h <= 0) {
+         return;
+     }
+     x -= 160; /* 320 x 240 screen to centred coordinates */
+     y -= 120;
+     p->tag.len = 3;
+     p->code = 0x60; /* TILE */
+-    p->r = r;
+-    p->g = g;
+-    p->b = b;
++    p->r = rgb >> 16;
++    p->g = rgb >> 8;
++    p->b = rgb;
+     p->x = x << sx;
+     p->y = y << sy;
+     p->w = w << sx;
+@@ -448,44 +455,109 @@ static void Stg30_EvoTile(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h, s32 r, s3
+     Sys_State.packet.addr = (sptr)(p + 1);
+ }
+ 
+-/* The bar's place: above the slot's HUD box, under its name (Stg30_FighterHudNamePos). */
+-#define EVO_BAR_X0 17
+-#define EVO_BAR_STEP 99
+-#define EVO_BAR_Y 197
+-#define EVO_BAR_W 84
+-#define EVO_BAR_H 3
++s32 Stg30_EvoHudLift(void) {
++    return Stg30_EvoLift;
++}
++
++/* The party HUD box (slot 0; slots 99 apart), as the game draws it: x 13..107, its bottom edge
++ * (grey, navy, grey, shadow) at y 225..228 before the lift. The DP row extends the box downwards
++ * under the name strip, in the box's colours, with an "HP"-style label and gauge. */
++#define EVO_BOX_X 13
++#define EVO_BOX_STEP 99
++#define EVO_BOX_W 95
++#define EVO_ROW_Y 215 /* where the lifted box's bottom edge was: the row starts there */
++#define EVO_ROW_H 14
++#define EVO_LABEL_X 50 /* the "HP" / "MP" labels' x */
++#define EVO_GAUGE_X 62 /* the HP / MP gauges: 40 wide, 4 rows and a shadow row */
++#define EVO_GAUGE_W 40
++
++/* "DP" in the labels' 4 x 5 letters */
++static const u8 Stg30_EvoGlyphs[2][5] = { { 0xE, 0x9, 0x9, 0x9, 0xE }, { 0xE, 0x9, 0xE, 0x8, 0x8 } };
++
++static void Stg30_EvoGauge(GfxPartOTag *ot, s32 x, s32 y, s32 fill, const u32 *rows) {
++    s32 i;
++
++    /* drawn last = on top: the filled part, then the empty part under it */
++    for (i = 0; i < 4; i++) {
++        Stg30_EvoTile(ot, x, y + i, fill, 1, rows[i]);
++    }
++    Stg30_EvoTile(ot, x, y, EVO_GAUGE_W, 4, 0x082163);
++    Stg30_EvoTile(ot, x, y + 4, EVO_GAUGE_W, 1, 0x0C2567);
++}
+ 
+ void Stg30_EvoDrawBar(s32 slot, void *parts) {
++    static const u32 green[4] = { 0x04461C, 0xCAFBE2, 0x25FB88, 0x04461C };  /* the HP gauge's rows */
++    static const u32 gold[4] = { 0x463A04, 0xFFF6C8, 0xFBC825, 0x463A04 };
++    static const u32 white[4] = { 0x464646, 0xFFFFFF, 0xE8F4FF, 0x464646 };
++    static const u32 blue[4] = { 0x042A46, 0xC8EEFF, 0x28B4FB, 0x042A46 };
+     Stg30Evo *e;
+     GfxPartOTag *ot;
+     s32 x;
++    s32 y;
++    s32 i;
++    s32 j;
+     s32 fill;
+-    s32 blink;
+ 
+-    if (!Host_FpBattleEvo() || slot < 0 || slot >= 3 || parts == NULL) {
++    if (Stg30_EvoLift == 0 || slot < 0 || slot >= 3 || parts == NULL) {
+         return;
+     }
+     e = &Stg30_Evo[slot];
+-    if (e->turnsLeft == 0 && !e->revert && Stg30_EvoTarget(slot) == 0) {
+-        return; /* no Champion form to reach */
+-    }
+     ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)parts)[0x0B]]; /* the first part's otLayer (Rec1D6B4) */
+-    x = EVO_BAR_X0 + slot * EVO_BAR_STEP;
+-    /* drawn last = on top: the fill first, then its frame */
++    x = EVO_BOX_X + slot * EVO_BOX_STEP;
++    y = EVO_ROW_Y;
++    /* drawn last = on top, so the contents first: the gauge */
+     if (e->turnsLeft != 0 || e->revert) {
+-        /* in the Champion form: the turns it has left, light blue */
++        /* in the Champion form: the turns it has left, in blue */
+         s32 n = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
+ 
+-        fill = EVO_BAR_W * n / EVO_TURNS;
+-        Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0x40, 0xC0, 0xFF);
++        Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, EVO_GAUGE_W * n / EVO_TURNS, blue);
++    } else if (Stg30_EvoTarget(slot) == 0) {
++        Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, 0, green); /* no Champion form: empty */
+     } else {
+-        fill = EVO_BAR_W * e->energy / EVO_MAX;
++        fill = EVO_GAUGE_W * e->energy / EVO_MAX;
++        if (e->energy > 0 && fill == 0) {
++            fill = 1;
++        }
+         if (e->energy >= EVO_MAX && Stg30_Battle.digis[slot].hp != 0) {
+-            blink = (Sys_State.frameCount >> 3) & 1; /* full: flashes gold and white */
+-            Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0xFF, blink ? 0xFF : 0xD0, blink ? 0xFF : 0x20);
++            /* full: Digivolve is in its menu; flashes gold and white */
++            Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, fill, (Sys_State.frameCount >> 3) & 1 ? white : gold);
+         } else {
+-            Stg30_EvoTile(ot, x, EVO_BAR_Y, fill, EVO_BAR_H, 0xFF, 0x80, 0x10);
++            Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, fill, green);
++        }
++    }
++    /* the label, with the labels' dark shadow down and right */
++    for (j = 0; j < 2; j++) {
++        for (i = 0; i < 5; i++) {
++            s32 b;
++
++            for (b = 0; b < 4; b++) {
++                if (Stg30_EvoGlyphs[j][i] & (8 >> b)) {
++                    Stg30_EvoTile(ot, x - EVO_BOX_X + EVO_LABEL_X + j * 6 + b, y + 2 + i, 1, 1, 0x8CCECE);
++                }
++            }
++        }
++    }
++    for (j = 0; j < 2; j++) {
++        for (i = 0; i < 5; i++) {
++            s32 b;
++
++            for (b = 0; b < 4; b++) {
++                if (Stg30_EvoGlyphs[j][i] & (8 >> b)) {
++                    Stg30_EvoTile(ot, x - EVO_BOX_X + EVO_LABEL_X + j * 6 + b + 1, y + 3 + i, 1, 1, 0x000004);
++                }
++            }
+         }
+     }
+-    Stg30_EvoTile(ot, x - 1, EVO_BAR_Y - 1, EVO_BAR_W + 2, EVO_BAR_H + 2, 0x10, 0x10, 0x20);
++    /* the box's own edges, continued: bottom (grey, navy, grey, shadow), sides, then the fill */
++    Stg30_EvoTile(ot, x, y + EVO_ROW_H - 4, EVO_BOX_W, 1, 0x5A5A5A);
++    Stg30_EvoTile(ot, x + 1, y + EVO_ROW_H - 3, EVO_BOX_W - 2, 1, 0x001873);
++    Stg30_EvoTile(ot, x, y + EVO_ROW_H - 2, EVO_BOX_W, 1, 0x5A5A5A);
++    Stg30_EvoTile(ot, x + 1, y + EVO_ROW_H - 1, EVO_BOX_W, 1, 0x000010);
++    Stg30_EvoTile(ot, x, y, 1, EVO_ROW_H - 4, 0xB5B5B5);
++    Stg30_EvoTile(ot, x + 1, y, 1, EVO_ROW_H - 3, 0x00106B);
++    Stg30_EvoTile(ot, x + 2, y, 1, EVO_ROW_H - 4, 0xB5B5B5);
++    Stg30_EvoTile(ot, x + EVO_BOX_W - 3, y, 1, EVO_ROW_H - 4, 0x525252);
++    Stg30_EvoTile(ot, x + EVO_BOX_W - 2, y, 1, EVO_ROW_H - 3, 0x001873);
++    Stg30_EvoTile(ot, x + EVO_BOX_W - 1, y, 1, EVO_ROW_H - 4, 0x525252);
++    Stg30_EvoTile(ot, x + 3, y, EVO_BOX_W - 6, EVO_ROW_H - 4, 0x4A638C);
+ }
+diff --git a/src/stag3000/fighterhud.c b/src/stag3000/fighterhud.c
+index d71cf0d..10e088b 100644
+--- a/src/stag3000/fighterhud.c
++++ b/src/stag3000/fighterhud.c
+@@ -74,6 +74,11 @@ void Stg30_FighterHudUpdate(Stg30TaskHead *a0) {
+             args.color = 0;
+             args.x = Stg30_FighterHudNamePos[a0->param].x;
+             args.y = Stg30_FighterHudNamePos[a0->param].y;
++#ifdef DW2_NATIVE
++            if (a0->param < 3) {
++                args.y -= Stg30_EvoHudLift(); /* room for the DP row (battle digivolution) */
++            }
++#endif
+             args.charDelay = 8;
+             args.charAdvance = 0;
+             args.lineAdvance = 0;
+@@ -95,6 +100,7 @@ void Stg30_FighterHudUpdate(Stg30TaskHead *a0) {
+ 
+                     if (a0->param < 3) {
+                         pos = Stg30_OrderLabelPos[a0->param];
++                        pos.hi -= Stg30_EvoHudLift();
+                     } else {
+                         pos.lo = (u16)Stg30_FighterHudParts[a0->param - 3];
+                         pos.hi = (u16)((u32)Stg30_FighterHudParts[a0->param - 3] >> 16);
+@@ -248,14 +254,28 @@ void Stg30_FighterHudDraw(Actor *a0) {
+         if (a0->param < 3) {
+             Stg30_SetGaugeParts(p, 0x400, d->hp, d->maxHp);
+             Stg30_SetGaugeParts(p, 0x4000, d->mp, d->maxMp);
++        } else {
++            Stg30_SetGaugeParts(p, 0x20, d->hp, d->maxHp);
++        }
+ #ifdef DW2_NATIVE
++        /* battle digivolution: the party box raised, with the DP row under it */
++        t = a0->param < 3 ? Stg30_EvoHudLift() : 0;
++        if (t != 0) {
+             if (w->openScale == 0x1000) {
+                 Stg30_EvoDrawBar(a0->param, p); /* before the parts: drawn over them */
+             }
+-#endif
+-        } else {
+-            Stg30_SetGaugeParts(p, 0x20, d->hp, d->maxHp);
++            for (q = p; q->fileId != 0; q++) {
++                q->y -= t;
++            }
+         }
++#endif
+         Gfx_DrawParts((EntA0 *)p);
++#ifdef DW2_NATIVE
++        if (t != 0) {
++            for (q = p; q->fileId != 0; q++) {
++                q->y += t;
++            }
++        }
++#endif
+     }
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,111 @@
+From 4e4864a6db2e3dae803fb57f073ae799b650b288 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 12:52:32 +0000
+Subject: [PATCH 25/26] Battle digivolution: "62/100%" under the DP gauge
+
+The DP section shows how full the gauge is under it, as the MP section shows
+its numbers: the game's own MP digit parts one section lower, with the "/"
+and a "%" drawn in the digits' style. As the Champion form it shows the turns
+left as a percentage.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ src/stag3000/evo_native.inc | 49 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index dedf106..03146a6 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -609,10 +609,40 @@ static void Stg30_EvoLabel(GfxPartOTag *ot, s32 x, s32 y) {
+     }
+ }
+ 
++/* The MP numbers' digit parts (013B 0x1F..0x24: max 0x80, current 0x100), and the "/" and a "%"
++ * in the digits' style: lit pixels in the label colour, each with its shadow down and right. */
++#define EVO_DIGITS_FIRST 0x013B001F
++#define EVO_DIGITS_LAST 0x013B0024
++#define EVO_PCT_DX 6
++static const u8 Stg30_EvoSlash[5] = { 0x2, 0x6, 0x4, 0xC, 0x8 };            /* the game's "/", 4 wide */
++static const u8 Stg30_EvoPercent[5] = { 0x19, 0x1A, 0x04, 0x0B, 0x13 };     /* 5 wide */
++
++static void Stg30_EvoGlyph(GfxPartOTag *ot, const u8 *rows, s32 w, s32 x, s32 y) {
++    s32 i;
++    s32 b;
++
++#define EVO_LIT(i, b) ((i) >= 0 && (i) < 5 && (b) >= 0 && (b) < w && (rows[i] & (1 << (w - 1 - (b)))))
++    for (i = 0; i < 5; i++) {
++        for (b = 0; b < w; b++) {
++            if (EVO_LIT(i, b)) {
++                Stg30_EvoTile(ot, x + b, y + i, 1, 1, 0x88C8C8);
++            }
++        }
++    }
++    for (i = 0; i < 5; i++) {
++        for (b = 0; b < w; b++) {
++            if (EVO_LIT(i, b) && !EVO_LIT(i + 1, b + 1)) {
++                Stg30_EvoTile(ot, x + b + 1, y + i + 1, 1, 1, 0x000008);
++            }
++        }
++    }
++#undef EVO_LIT
++}
++
+ /* fighterhud.c, after it drew the (raised) parts with the box sprite hidden: the DP gauge and
+  * label, then the stretched box under everything. */
+ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+-    static Stg30Part gauge[5];
++    static Stg30Part gauge[11]; /* the gauge's 4 parts and the percentage's 6 digits */
+     Stg30Evo *e;
+     Stg30Part *q;
+     Stg30Part *box = NULL;
+@@ -620,6 +650,7 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+     GfxPartTexSlot *tex;
+     GfxPartOTag *ot;
+     s32 n = 0;
++    s32 pct;
+     s32 num;
+     s32 den;
+     s32 i;
+@@ -631,10 +662,16 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+     for (q = (Stg30Part *)parts; q->fileId != 0; q++) {
+         if (q->fileId == EVO_BOX_FILE) {
+             box = q;
+-        } else if (q->fileId == EVO_GAUGE_FILE && n < 4) {
++        } else if (q->fileId == EVO_GAUGE_FILE && n < 10) {
+             gauge[n] = *q;
+             gauge[n].y += EVO_DP_DY;
+             n++;
++        } else if (q->fileId >= EVO_DIGITS_FIRST && q->fileId <= EVO_DIGITS_LAST && n < 10) {
++            /* the MP numbers' digits, one section lower and a little left (room for the %) */
++            gauge[n] = *q;
++            gauge[n].y += EVO_DP_DY - 13;
++            gauge[n].x -= EVO_PCT_DX;
++            n++;
+         }
+     }
+     if (box == NULL) {
+@@ -653,11 +690,19 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+         }
+     }
+     Stg30_SetGaugeParts(gauge, 0x400, num, den);
++    /* under it, as MP's numbers: how full, "62/100%" (as the Champion: the turns left, in %) */
++    pct = e->turnsLeft != 0 || e->revert ? (e->revert ? 0 : (e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft) * 100 / EVO_TURNS)
++                                         : Stg30_EvoTarget(slot) != 0 ? e->energy * 100 / EVO_MAX : 0;
++    Gfx_SetPartsNumber((GfxPart *)gauge, 0x100, 3, pct);
++    Gfx_SetPartsNumber((GfxPart *)gauge, 0x80, 3, 100);
+     Gfx_DrawParts((s32)(sptr)gauge);
+     ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)box)[0x0B]]; /* its otLayer (Rec1D6B4) */
+     cell = (GfxPartCell *)Cd_GetFileEntry(EVO_BOX_FILE);
+     /* the label where the HP label is, 26 rows lower (the label sprite: x -11, y -18) */
+     Stg30_EvoLabel(ot, 160 + box->x - 11, 120 + box->y - 18 + EVO_DP_DY);
++    /* the "/" between the numbers (the MP one's place, x 20) and a "%" after them */
++    Stg30_EvoGlyph(ot, Stg30_EvoSlash, 4, 160 + box->x + 20 - EVO_PCT_DX, 120 + box->y + EVO_DP_DY - 13);
++    Stg30_EvoGlyph(ot, Stg30_EvoPercent, 5, 160 + box->x + 37 + 6 - EVO_PCT_DX, 120 + box->y + EVO_DP_DY - 13);
+     tex = (GfxPartTexSlot *)Gfx_FindOrLoadTexSlot(EVO_BOX_FILE & 0xFFFF0000);
+     for (i = 0; i < (s32)(sizeof(Stg30_EvoRight) / sizeof(Stg30_EvoRight[0])); i++) {
+         Stg30_EvoBoxQuad(ot, cell, tex, box->x, box->y, 34, cell->w - 34, &Stg30_EvoRight[i]);
+-- 
+2.43.0
+

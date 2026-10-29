@@ -1,0 +1,385 @@
+From 9a07d40fc2048e7a34694b0c1b01e17c959da859 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 12:45:27 +0000
+Subject: [PATCH 24/26] Battle digivolution: the HUD box itself grows a DP
+ section
+
+The party HUD box is one sprite (013B entry 0x4A). It is now drawn in slices
+(POLY_FT4, as Gfx_DrawPartQuadsRot draws parts) 13 rows taller: the HP / MP
+panel gets a third section like MP's with the panel's shaded bottom under it,
+the left panel grows with plain rows above its own shaded bottom, and the name
+strip moves down. The box is raised by as much, so the name strip and the name
+stay where they were. The DP gauge is the game's own HP gauge parts drawn 26
+rows lower; the label is "DP" in the HP label's letters and shadow. Replaces
+the hand-drawn row under the box.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ include/stag3000/evo_native.h |   5 +-
+ src/stag3000/evo_native.inc   | 231 +++++++++++++++++-----------------
+ src/stag3000/fighterhud.c     |  21 ++--
+ 3 files changed, 129 insertions(+), 128 deletions(-)
+
+diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
+index 0bbeaae..bbc4e2d 100644
+--- a/include/stag3000/evo_native.h
++++ b/include/stag3000/evo_native.h
+@@ -18,8 +18,9 @@ s32 Stg30_EvoCanDigivolve(s32 slot);
+ void Stg30_EvoRequest(s32 slot, s32 on);
+ /* commandmenu.c: the command's text, glyphs, 0xFF ended */
+ extern u8 Stg30_EvoCommandText[];
+-/* fighterhud.c: the DP row (energy) of party slot 0..2 under its HUD box (HUD parts `parts`;
+- * drawn before them), and how far the party HUD is raised to make room for it (0: off) */
++/* fighterhud.c: the DP row of party slot 0..2 (its HUD parts `parts`, already raised and drawn
++ * with the box sprite hidden): the DP gauge and label, then the box stretched to hold them; and
++ * how far the party HUD is raised for it (0: off this battle) */
+ void Stg30_EvoDrawBar(s32 slot, void *parts);
+ s32 Stg30_EvoHudLift(void);
+ 
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index c2661a6..dedf106 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -20,6 +20,7 @@ extern u8 Digi_GetEvolutionTarget(s32 id, s32 val);
+ extern void Mem_Free(ActorWork *arg0);
+ extern s32 Cd_GetFileSync(s32 arg0);
+ extern u8 Digi_GetLearnedSkill(s32 digiId);
++extern GfxTexSlot *Gfx_FindOrLoadTexSlot(s32 id);
+ 
+ /* Actor.u38 transform with its Y rotation (Stg20Rot): the fighter spins in the effect. */
+ typedef struct {
+@@ -34,6 +35,7 @@ typedef struct {
+ #define EVO_RATE 120 /* percent: every gain above times this (120 = 20 % faster) */
+ #define EVO_TURNS 3  /* turns it fights in the Champion form */
+ #define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the Champion form */
++#define EVO_BOX_GROW 13 /* rows the party HUD box grows by (and is raised by) for the DP row */
+ #define EVO_FX_MODEL 0xDD9
+ #define EVO_FX_ANIM 0xDDB
+ #define EVO_FX_FRAMES 0x78
+@@ -121,7 +123,7 @@ static void Stg30_EvoSeenNow(void) {
+ static void Stg30_EvoBattleInit(void) {
+     Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
+     Stg30_EvoFxSlot = NULL;
+-    Stg30_EvoLift = Host_FpBattleEvo() ? 10 : 0;
++    Stg30_EvoLift = Host_FpBattleEvo() ? EVO_BOX_GROW : 0;
+     Stg30_EvoSeqSlot = -1;
+     Stg30_EvoSeenNow();
+ }
+@@ -519,151 +521,148 @@ s32 Stg30_EvoHudLift(void) {
+     return Stg30_EvoLift;
+ }
+ 
+-/* The party HUD box (slot 0; slots 99 apart), as the game draws it: x 13..107, its bottom edge
+- * (grey, navy, grey, shadow) at y 225..228 before the lift. The DP row extends the box downwards
+- * under the name strip, in the box's colours, with an "HP"-style label and gauge. */
+-#define EVO_BOX_X 13
+-#define EVO_BOX_STEP 99
+-#define EVO_BOX_W 95
+-#define EVO_ROW_Y 215 /* where the lifted box's bottom edge was: the row starts there */
+-#define EVO_ROW_H 14
+-#define EVO_LABEL_X 50 /* the "HP" / "MP" labels' x */
+-#define EVO_GAUGE_X 62 /* the HP / MP gauges: 40 wide, 4 rows and a shadow row */
+-#define EVO_GAUGE_W 40
+-
+-/* "DP" in the labels' 4 x 5 letters */
+-static const u8 Stg30_EvoGlyphs[2][5] = { { 0xE, 0x9, 0x9, 0x9, 0xE }, { 0xE, 0x9, 0xE, 0x8, 0x8 } };
+-
+-static void Stg30_EvoGauge(GfxPartOTag *ot, s32 x, s32 y, s32 fill, const u32 *rows) {
++/* The party HUD box is one 96 x 49 sprite (013B entry 0x4A; layout 01A1 entries 0x23..0x25):
++ * the EL panel and the status panel on the left (columns 0..33), the HP / MP panel on the right
++ * (34..95), the name strip below (rows 31..48). The DP row makes it EVO_BOX_GROW rows taller:
++ * the right panel gets a third section like MP's (its gauge trough and the panel's shaded bottom,
++ * rows 18..30), the plain rows 11..17 going under the MP numbers instead; the left panel grows
++ * with plain rows from the EL panel (3..6) above its own shaded bottom (24..30); the name strip
++ * and the bottom edge move down. The whole box is raised by as much, so the name strip stays
++ * where it was. The DP gauge is the game's HP gauge drawn 26 rows lower, the label the HP
++ * label's P with a D drawn in its style. */
++#define EVO_BOX_FILE 0x013B004A
++#define EVO_GAUGE_FILE 0x013B001C
++#define EVO_DP_DY 26 /* HP section to DP section */
++
++typedef struct {
++    u8 dst;  /* first box row it is drawn at */
++    u8 src;  /* first sprite row */
++    u8 n;    /* rows */
++} Stg30EvoSlice;
++
++static const Stg30EvoSlice Stg30_EvoRight[] = { { 0, 0, 24 }, { 24, 11, 7 }, { 31, 18, 13 }, { 44, 31, 18 } };
++static const Stg30EvoSlice Stg30_EvoLeft[] = {
++    { 0, 0, 24 }, { 24, 3, 4 }, { 28, 3, 4 }, { 32, 3, 4 }, { 36, 3, 1 }, { 37, 24, 7 }, { 44, 31, 18 },
++};
++
++/* One textured quad from the box sprite: columns c0..c0+w, sprite rows src..src+n at box row dst. */
++static void Stg30_EvoBoxQuad(GfxPartOTag *ot, GfxPartCell *e, GfxPartTexSlot *t, s32 bx, s32 by, s32 c0, s32 w,
++                             const Stg30EvoSlice *sl) {
++    GfxPartPolyFT4 *p = (GfxPartPolyFT4 *)Sys_State.packet.addr;
++    s32 sx = Sys_State.centerX.s == 0x140;
++    s32 sy = Sys_State.centerY.s == 0xF0;
++    s32 x0 = bx + e->x + c0;
++    s32 y0 = by + e->y + sl->dst;
++    s32 u = e->u + t->u + c0;
++    s32 v = e->v + sl->src;
+     s32 i;
+ 
+-    /* drawn last = on top: the filled part, then the empty part under it */
++    p->c.r = p->c.g = p->c.b = 0x80;
++    p->tag.len = 9;
++    p->c.code = 0x2C; /* POLY_FT4, as Gfx_DrawPartQuadsRot */
+     for (i = 0; i < 4; i++) {
+-        Stg30_EvoTile(ot, x, y + i, fill, 1, rows[i]);
++        p->v[i].x = (u16)((x0 + ((i & 1) ? w : 0)) << sx);
++        p->v[i].y = (u16)((y0 + ((i & 2) ? sl->n : 0)) << sy);
++        p->v[i].u = (u8)(u + ((i & 1) ? w : 0));
++        p->v[i].v = (u8)(v + ((i & 2) ? sl->n : 0));
+     }
+-    Stg30_EvoTile(ot, x, y, EVO_GAUGE_W, 4, 0x082163);
+-    Stg30_EvoTile(ot, x, y + 4, EVO_GAUGE_W, 1, 0x0C2567);
++    if (p->v[1].u == 0) {
++        p->v[1].u = p->v[3].u = 0xFF;
++    }
++    p->v[0].extra = ((e->clutY + t->clutY + e->clutRow) << 6) | (((e->clutX + t->clutX) >> 4) & 0x3F);
++    p->v[1].extra = t->tpage;
++    p->tag.addr = ot->addr;
++    ot->addr = (u32)(uptr)p;
++    Sys_State.packet.addr = (sptr)(p + 1);
+ }
+ 
+-/* The name strip's background: a fine grain of three blues. The same grain (fixed, made once)
+- * fills the DP row so that it reads as the name strip continued; runs of a colour as one tile. */
+-#define EVO_NOISE_W 96
+-#define EVO_NOISE_H 10
+-static u8 Stg30_EvoNoise[EVO_NOISE_H][EVO_NOISE_W];
+-static s32 Stg30_EvoNoiseReady;
++/* "D" and "P" in the HP label's 5 x 5 letters (the P is the label's own) */
++static const u8 Stg30_EvoGlyphs[2][5] = { { 0x1E, 0x11, 0x11, 0x11, 0x1E }, { 0x1E, 0x11, 0x11, 0x1E, 0x10 } };
++
++static s32 Stg30_EvoLit(s32 g, s32 i, s32 b) {
++    return i >= 0 && i < 5 && b >= 0 && b < 5 && (Stg30_EvoGlyphs[g][i] & (0x10 >> b));
++}
+ 
+-static void Stg30_EvoNoiseFill(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h) {
+-    static const u32 blues[3] = { 0x304888, 0x405888, 0x385088 };
++static void Stg30_EvoLabel(GfxPartOTag *ot, s32 x, s32 y) {
++    s32 g;
+     s32 i;
+-    s32 j;
+-    s32 k;
+-
+-    if (!Stg30_EvoNoiseReady) {
+-        u32 r = 0x2B9D5;
+-
+-        for (j = 0; j < EVO_NOISE_H; j++) {
+-            for (i = 0; i < EVO_NOISE_W;) {
+-                s32 c;
+-                s32 n;
+-
+-                r = r * 1103515245u + 12345u;
+-                c = (r >> 16) % 3;
+-                n = 1 + ((r >> 20) & 3); /* runs of 1 to 4, as in the game's */
+-                for (k = 0; k < n && i < EVO_NOISE_W; k++) {
+-                    Stg30_EvoNoise[j][i++] = (u8)c;
++    s32 b;
++
++    /* drawn last = on top: the letters first, then their dark shadow one down and right */
++    for (g = 0; g < 2; g++) {
++        for (i = 0; i < 5; i++) {
++            for (b = 0; b < 5; b++) {
++                if (Stg30_EvoLit(g, i, b)) {
++                    Stg30_EvoTile(ot, x + g * 6 + b, y + i, 1, 1, 0x88C8C8);
+                 }
+             }
+         }
+-        Stg30_EvoNoiseReady = 1;
+-    }
+-    if (w > EVO_NOISE_W) {
+-        w = EVO_NOISE_W;
+-    }
+-    if (h > EVO_NOISE_H) {
+-        h = EVO_NOISE_H;
+     }
+-    for (j = 0; j < h; j++) {
+-        for (i = 0; i < w; i = k) {
+-            for (k = i + 1; k < w && Stg30_EvoNoise[j][k] == Stg30_EvoNoise[j][i]; k++) {
++    for (g = 0; g < 2; g++) {
++        for (i = 0; i < 5; i++) {
++            for (b = 0; b < 5; b++) {
++                if (Stg30_EvoLit(g, i, b) && !Stg30_EvoLit(g, i + 1, b + 1)) {
++                    Stg30_EvoTile(ot, x + g * 6 + b + 1, y + i + 1, 1, 1, 0x000008);
++                }
+             }
+-            Stg30_EvoTile(ot, x + i, y + j, k - i, 1, blues[Stg30_EvoNoise[j][i]]);
+         }
+     }
+ }
+ 
++/* fighterhud.c, after it drew the (raised) parts with the box sprite hidden: the DP gauge and
++ * label, then the stretched box under everything. */
+ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+-    static const u32 green[4] = { 0x04461C, 0xCAFBE2, 0x25FB88, 0x04461C };  /* the HP gauge's rows */
+-    static const u32 gold[4] = { 0x463A04, 0xFFF6C8, 0xFBC825, 0x463A04 };
+-    static const u32 white[4] = { 0x464646, 0xFFFFFF, 0xE8F4FF, 0x464646 };
+-    static const u32 blue[4] = { 0x042A46, 0xC8EEFF, 0x28B4FB, 0x042A46 };
++    static Stg30Part gauge[5];
+     Stg30Evo *e;
++    Stg30Part *q;
++    Stg30Part *box = NULL;
++    GfxPartCell *cell;
++    GfxPartTexSlot *tex;
+     GfxPartOTag *ot;
+-    s32 x;
+-    s32 y;
++    s32 n = 0;
++    s32 num;
++    s32 den;
+     s32 i;
+-    s32 j;
+-    s32 fill;
+ 
+     if (Stg30_EvoLift == 0 || slot < 0 || slot >= 3 || parts == NULL) {
+         return;
+     }
+     e = &Stg30_Evo[slot];
+-    ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)parts)[0x0B]]; /* the first part's otLayer (Rec1D6B4) */
+-    x = EVO_BOX_X + slot * EVO_BOX_STEP;
+-    y = EVO_ROW_Y;
+-    /* drawn last = on top, so the contents first: the gauge */
++    for (q = (Stg30Part *)parts; q->fileId != 0; q++) {
++        if (q->fileId == EVO_BOX_FILE) {
++            box = q;
++        } else if (q->fileId == EVO_GAUGE_FILE && n < 4) {
++            gauge[n] = *q;
++            gauge[n].y += EVO_DP_DY;
++            n++;
++        }
++    }
++    if (box == NULL) {
++        return;
++    }
++    gauge[n].fileId = 0;
++    /* the gauge: energy; full and ready, it flashes; as the Champion, the turns it has left */
+     if (e->turnsLeft != 0 || e->revert) {
+-        /* in the Champion form: the turns it has left, in blue */
+-        s32 n = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
+-
+-        Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, EVO_GAUGE_W * n / EVO_TURNS, blue);
+-    } else if (Stg30_EvoTarget(slot) == 0) {
+-        Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, 0, green); /* no Champion form: empty */
++        num = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
++        den = EVO_TURNS;
+     } else {
+-        fill = EVO_GAUGE_W * e->energy / EVO_MAX;
+-        if (e->energy > 0 && fill == 0) {
+-            fill = 1;
+-        }
+-        if (e->energy >= EVO_MAX && Stg30_Battle.digis[slot].hp != 0) {
+-            /* full: Digivolve is in its menu; flashes gold and white */
+-            Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, fill, (Sys_State.frameCount >> 3) & 1 ? white : gold);
+-        } else {
+-            Stg30_EvoGauge(ot, x - EVO_BOX_X + EVO_GAUGE_X, y + 2, fill, green);
++        num = Stg30_EvoTarget(slot) != 0 ? e->energy : 0;
++        den = EVO_MAX;
++        if (num >= EVO_MAX && Stg30_Battle.digis[slot].hp != 0 && ((Sys_State.frameCount >> 3) & 1)) {
++            num = 0;
+         }
+     }
+-    /* the label, with the labels' dark shadow down and right */
+-    for (j = 0; j < 2; j++) {
+-        for (i = 0; i < 5; i++) {
+-            s32 b;
+-
+-            for (b = 0; b < 4; b++) {
+-                if (Stg30_EvoGlyphs[j][i] & (8 >> b)) {
+-                    Stg30_EvoTile(ot, x - EVO_BOX_X + EVO_LABEL_X + j * 6 + b, y + 2 + i, 1, 1, 0x8CCECE);
+-                }
+-            }
+-        }
++    Stg30_SetGaugeParts(gauge, 0x400, num, den);
++    Gfx_DrawParts((s32)(sptr)gauge);
++    ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)box)[0x0B]]; /* its otLayer (Rec1D6B4) */
++    cell = (GfxPartCell *)Cd_GetFileEntry(EVO_BOX_FILE);
++    /* the label where the HP label is, 26 rows lower (the label sprite: x -11, y -18) */
++    Stg30_EvoLabel(ot, 160 + box->x - 11, 120 + box->y - 18 + EVO_DP_DY);
++    tex = (GfxPartTexSlot *)Gfx_FindOrLoadTexSlot(EVO_BOX_FILE & 0xFFFF0000);
++    for (i = 0; i < (s32)(sizeof(Stg30_EvoRight) / sizeof(Stg30_EvoRight[0])); i++) {
++        Stg30_EvoBoxQuad(ot, cell, tex, box->x, box->y, 34, cell->w - 34, &Stg30_EvoRight[i]);
+     }
+-    for (j = 0; j < 2; j++) {
+-        for (i = 0; i < 5; i++) {
+-            s32 b;
+-
+-            for (b = 0; b < 4; b++) {
+-                if (Stg30_EvoGlyphs[j][i] & (8 >> b)) {
+-                    Stg30_EvoTile(ot, x - EVO_BOX_X + EVO_LABEL_X + j * 6 + b + 1, y + 3 + i, 1, 1, 0x000004);
+-                }
+-            }
+-        }
++    for (i = 0; i < (s32)(sizeof(Stg30_EvoLeft) / sizeof(Stg30_EvoLeft[0])); i++) {
++        Stg30_EvoBoxQuad(ot, cell, tex, box->x, box->y, 0, 34, &Stg30_EvoLeft[i]);
+     }
+-    /* the box's own edges, continued: bottom (grey, navy, grey, shadow), sides, then the fill */
+-    Stg30_EvoTile(ot, x, y + EVO_ROW_H - 4, EVO_BOX_W, 1, 0x5A5A5A);
+-    Stg30_EvoTile(ot, x + 1, y + EVO_ROW_H - 3, EVO_BOX_W - 2, 1, 0x001873);
+-    Stg30_EvoTile(ot, x, y + EVO_ROW_H - 2, EVO_BOX_W, 1, 0x5A5A5A);
+-    Stg30_EvoTile(ot, x + 1, y + EVO_ROW_H - 1, EVO_BOX_W, 1, 0x000010);
+-    Stg30_EvoTile(ot, x, y, 1, EVO_ROW_H - 4, 0xB5B5B5);
+-    Stg30_EvoTile(ot, x + 1, y, 1, EVO_ROW_H - 3, 0x00106B);
+-    Stg30_EvoTile(ot, x + 2, y, 1, EVO_ROW_H - 4, 0xB5B5B5);
+-    Stg30_EvoTile(ot, x + EVO_BOX_W - 3, y, 1, EVO_ROW_H - 4, 0x525252);
+-    Stg30_EvoTile(ot, x + EVO_BOX_W - 2, y, 1, EVO_ROW_H - 3, 0x001873);
+-    Stg30_EvoTile(ot, x + EVO_BOX_W - 1, y, 1, EVO_ROW_H - 4, 0x525252);
+-    Stg30_EvoNoiseFill(ot, x + 3, y, EVO_BOX_W - 6, EVO_ROW_H - 4);
+ }
+diff --git a/src/stag3000/fighterhud.c b/src/stag3000/fighterhud.c
+index 10e088b..a6e2517 100644
+--- a/src/stag3000/fighterhud.c
++++ b/src/stag3000/fighterhud.c
+@@ -74,11 +74,7 @@ void Stg30_FighterHudUpdate(Stg30TaskHead *a0) {
+             args.color = 0;
+             args.x = Stg30_FighterHudNamePos[a0->param].x;
+             args.y = Stg30_FighterHudNamePos[a0->param].y;
+-#ifdef DW2_NATIVE
+-            if (a0->param < 3) {
+-                args.y -= Stg30_EvoHudLift(); /* room for the DP row (battle digivolution) */
+-            }
+-#endif
++
+             args.charDelay = 8;
+             args.charAdvance = 0;
+             args.lineAdvance = 0;
+@@ -258,22 +254,27 @@ void Stg30_FighterHudDraw(Actor *a0) {
+             Stg30_SetGaugeParts(p, 0x20, d->hp, d->maxHp);
+         }
+ #ifdef DW2_NATIVE
+-        /* battle digivolution: the party box raised, with the DP row under it */
+-        t = a0->param < 3 ? Stg30_EvoHudLift() : 0;
++        /* battle digivolution: the party box grows a DP row (and is raised as much, so its name
++         * strip stays put); the box sprite itself is drawn stretched afterwards, under the parts */
++        t = a0->param < 3 && w->openScale == 0x1000 ? Stg30_EvoHudLift() : 0;
+         if (t != 0) {
+-            if (w->openScale == 0x1000) {
+-                Stg30_EvoDrawBar(a0->param, p); /* before the parts: drawn over them */
+-            }
+             for (q = p; q->fileId != 0; q++) {
+                 q->y -= t;
++                if (q->fileId == 0x013B004A) {
++                    q->visible = 0;
++                }
+             }
+         }
+ #endif
+         Gfx_DrawParts((EntA0 *)p);
+ #ifdef DW2_NATIVE
+         if (t != 0) {
++            Stg30_EvoDrawBar(a0->param, p);
+             for (q = p; q->fileId != 0; q++) {
+                 q->y += t;
++                if (q->fileId == 0x013B004A) {
++                    q->visible = 1;
++                }
+             }
+         }
+ #endif
+-- 
+2.43.0
+

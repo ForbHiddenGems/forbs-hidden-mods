@@ -1,0 +1,203 @@
+From 3e22d4bfa68073db238133ae68d5c9d50dbd262a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 08:40:24 +0000
+Subject: [PATCH 14/26] Model mods: replacement files from mods/<hex id>.bin
+ (native only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/host.h       |   4 ++
+ host/main.c       |   1 +
+ host/mods.c       | 104 ++++++++++++++++++++++++++++++++++++++++++++++
+ src/main/cd.c     |   7 ++++
+ src/main/cdread.c |  17 ++++++++
+ 5 files changed, 133 insertions(+)
+ create mode 100644 host/mods.c
+
+diff --git a/host/host.h b/host/host.h
+index dbcfec6..bbba4ac 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -148,6 +148,10 @@ unsigned short Host_PadParseButtons(const char *names);
+  * with disc sector `lba` after its 4-byte header: subheader (8) + 2328 bytes (Form 1: the 2048
+  * data bytes, then zeros) and returns the file id, or -1 (no file there; body is zero). */
+ void Host_PakOpen(const char *path, const char *disc, int no_window);
++/* host/mods.c: replacement game files from mods/<hex id>.bin next to the exe or in the user data
++ * folder (model mods); Host_ModFile is NULL for a file that is not replaced. */
++void Host_ModsInit(void);
++const void *Host_ModFile(int id, int *size);
+ int Host_PakSector(int lba, unsigned char *body);
+ /* The file holding sector `lba` and its size in sectors, or -1 (and 0 sectors). */
+ int Host_PakFileAt(int lba, int *sectors);
+diff --git a/host/main.c b/host/main.c
+index 4f978e3..07c577f 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -553,6 +553,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     /* Main thread, before the game thread and window: the pack build may show its own progress
+      * window and a file dialog. */
+     Host_PakOpen(pak, disc, no_window);
++    Host_ModsInit();
+ #if DW2_DEV
+     DevEdit_Init();
+ #endif
+diff --git a/host/mods.c b/host/mods.c
+new file mode 100644
+index 0000000..8893593
+--- /dev/null
++++ b/host/mods.c
+@@ -0,0 +1,104 @@
++/* Model mods (native only): replacement game files in a mods/ folder.
++ *
++ * A file named <hex file id>.bin (e.g. 0A12.bin, as the dw2model Blender add-on exports it) in
++ * mods/ next to the exe, or in mods/ in the user data folder, is served to the game instead of
++ * that file from dw2.pak. The pack itself is never changed and is still checked in full; with
++ * no mods folder (or an empty one) nothing changes. The game reads every model, animation and
++ * texture file through Cd_ReadFileAsync (src/main/cdread.c), which asks Host_ModFile first. */
++#include <SDL3/SDL.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "host.h"
++
++#define MOD_IDS 0xE5B
++
++static void *mod_data[MOD_IDS];
++static int mod_size[MOD_IDS];
++static int mod_count;
++
++static int hexval(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++/* "0A12.bin" -> 0xA12, else -1 */
++static int mod_id(const char *name) {
++    int id = 0;
++    int i;
++
++    if (strlen(name) != 8 || SDL_strcasecmp(name + 4, ".bin") != 0) {
++        return -1;
++    }
++    for (i = 0; i < 4; i++) {
++        int v = hexval(name[i]);
++        if (v < 0) {
++            return -1;
++        }
++        id = id * 16 + v;
++    }
++    return id > 0 && id < MOD_IDS ? id : -1;
++}
++
++static SDL_EnumerationResult SDLCALL scan_one(void *dir, const char *dirname, const char *name) {
++    char *path = NULL;
++    size_t size = 0;
++    void *data;
++    int id = mod_id(name);
++
++    (void)dir;
++    if (id < 0 || mod_data[id] != NULL) {
++        return SDL_ENUM_CONTINUE; /* not a mod file, or already taken from the folder next to the exe */
++    }
++    SDL_asprintf(&path, "%s%s", dirname, name);
++    data = path ? SDL_LoadFile(path, &size) : NULL;
++    if (data == NULL || size == 0 || size > 0x80000) {
++        printf("[mods] skipped %s (%s)\n", path ? path : name, data ? "bigger than 512 KB" : SDL_GetError());
++        SDL_free(data);
++    } else {
++        mod_data[id] = data;
++        mod_size[id] = (int)size;
++        mod_count++;
++        printf("[mods] file %04X <- %s (%d bytes)\n", id, path, (int)size);
++    }
++    SDL_free(path);
++    return SDL_ENUM_CONTINUE;
++}
++
++static void scan(const char *base) {
++    char *dir = NULL;
++    SDL_PathInfo info;
++
++    if (base == NULL) {
++        return;
++    }
++    SDL_asprintf(&dir, "%smods", base);
++    if (dir != NULL && SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
++        SDL_EnumerateDirectory(dir, scan_one, NULL);
++    }
++    SDL_free(dir);
++}
++
++void Host_ModsInit(void) {
++    char *pref = SDL_GetPrefPath("", "DW2-Online");
++
++    scan(SDL_GetBasePath());
++    scan(pref);
++    SDL_free(pref);
++    if (mod_count) {
++        printf("[mods] %d replacement file(s) in use\n", mod_count);
++        fflush(stdout);
++    }
++}
++
++const void *Host_ModFile(int id, int *size) {
++    if (id <= 0 || id >= MOD_IDS || mod_data[id] == NULL) {
++        return NULL;
++    }
++    if (size) {
++        *size = mod_size[id];
++    }
++    return mod_data[id];
++}
+diff --git a/src/main/cd.c b/src/main/cd.c
+index c940887..b611a0c 100644
+--- a/src/main/cd.c
++++ b/src/main/cd.c
+@@ -279,6 +279,13 @@ s32 Cd_IsFileValid(s32 arg0) {
+ }
+ 
+ s32 Cd_GetFileSectors(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* model mods (host/mods.c): a replacement file's own size */
++    s32 size;
++    if (Host_ModFile(arg0, &size) != NULL) {
++        return (size + 0x7FF) >> 11;
++    }
++#endif
+     return Cd_FileSectors[arg0];
+ }
+ 
+diff --git a/src/main/cdread.c b/src/main/cdread.c
+index 7df184b..8a58d75 100644
+--- a/src/main/cdread.c
++++ b/src/main/cdread.c
+@@ -130,6 +130,23 @@ void Cd_ReadFileAsync(s32 arg0, s32 arg1) {
+     if (Cd_ReadState.state != 0) {
+         while (Cd_PollRead() != 0) {}
+     }
++#ifdef DW2_NATIVE
++    {
++        /* model mods (host/mods.c): the replacement file, at once; the read is done (state 5,
++         * as after the last sector) */
++        s32 size;
++        const void *mod = Host_ModFile(arg0, &size);
++        if (mod != NULL) {
++            memcpy((void *)arg1, mod, size);
++            memset((u8 *)arg1 + size, 0, (((size + 0x7FF) >> 11) << 11) - size);
++            Cd_ReadState.fileId = arg0;
++            Cd_ReadState.buf = arg1;
++            Cd_ReadState.sectorsLeft = 0;
++            Cd_ReadState.state = 5;
++            return;
++        }
++    }
++#endif
+     Cd_GetFilePos(arg0, sp10);
+     r = Cd_GetFileSectors(arg0);
+     Cd_ReadState.sectorsLeft = r;
+-- 
+2.43.0
+

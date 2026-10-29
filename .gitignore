@@ -1,0 +1,21 @@
+# Made by forbs.py on your PC: game source and builds, game data, your Digimon, the add-on zip
+DW2-PC/
+game-data/
+mods/
+dist/
+forbs.json
+.dw2-clone-tmp/
+
+# Game data must never be committed
+*.pak
+*.bin
+*.cue
+*.iso
+*.img
+*.zip
+
+# Blender and Python leftovers
+*.blend
+*.blend1
+__pycache__/
+*.pyc

@@ -1,0 +1,35 @@
+From 16d5d5388bc1280237c1fda88625930567eb7a52 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 12:15:33 +0000
+Subject: [PATCH 22/26] Battle digivolution: DP charges 20 % faster (EVO_RATE)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ src/stag3000/evo_native.inc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index a50b7af..55ccc1e 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -31,6 +31,7 @@ typedef struct {
+ #define EVO_TAKE 60  /* energy for losing a whole max HP */
+ #define EVO_DEAL 45  /* energy for taking a whole max HP from enemies */
+ #define EVO_ACT 4    /* energy for having had a turn */
++#define EVO_RATE 120 /* percent: every gain above times this (120 = 20 % faster) */
+ #define EVO_TURNS 3  /* turns it fights in the Champion form */
+ #define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the Champion form */
+ #define EVO_FX_MODEL 0xDD9
+@@ -131,7 +132,7 @@ static void Stg30_EvoAdd(s32 slot, s32 v) {
+     if (v <= 0 || e->turnsLeft != 0 || e->revert || Stg30_EvoTarget(slot) == 0) {
+         return;
+     }
+-    e->energy += v;
++    e->energy += (v * EVO_RATE + 99) / 100;
+     if (e->energy > EVO_MAX) {
+         e->energy = EVO_MAX;
+     }
+-- 
+2.43.0
+

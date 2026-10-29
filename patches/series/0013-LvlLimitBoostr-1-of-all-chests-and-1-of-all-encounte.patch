@@ -1,0 +1,390 @@
+From 28d89134ef905eeebc24b68c07cff3dd32244ceb Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 22:26:42 +0000
+Subject: [PATCH 13/26] LvlLimitBoostr: '1% of all chests' and '1% of all ?
+ encounters' toggles
+
+F1 > Display > LvlLimitBoostr, both on by default (boost_chests,
+boost_battles). The chest route now rolls every chest in the domains the first
+time it is opened (mystery encounters or not); a chest is never rolled twice,
+and one left with None keeps its LvlLimitBoostr.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  | 18 +++++----
+ host/host.h                    |  6 +++
+ host/main.c                    |  2 +
+ host/sdl.c                     | 28 +++++++++++++
+ host/settings.c                |  9 +++--
+ host/settings.h                |  2 +
+ host/settingsui.cpp            | 10 +++++
+ include/stag4000/fpview.h      |  2 +-
+ src/stag4000/fpview_native.inc | 72 +++++++++++++++++++++++-----------
+ src/stag4000/player.c          |  7 ++--
+ src/stag4000/stag4000.c        |  2 +-
+ 11 files changed, 118 insertions(+), 40 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index 238c8be..f761069 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -18,7 +18,7 @@ floating ? until the battle starts: 1 per floor, 30% of encounters, all except b
+ (the default). It works in every view, Classic too. **A ? holds a rarer Digimon** (F1, on by
+ default, `mystery_rare`) swaps each ? for one of its floor's less common enemy groups.
+ **LvlLimitBoostr**: a rare one-use find that raises a party Digimon's level limit by 1 (see
+-below); it only appears with mystery encounters on.
++below), in 1% of all chests and 1% of won ? encounters (F1 checkboxes, on by default).
+ 
+ ## Controls in the 3D views
+ 
+@@ -110,13 +110,15 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+ 
+ - **What it does**: +1 to a party Digimon's level limit (`maxLevel`). Only for a Digimon at
+   its limit whose limit is below 99; a limit of 99 can't be raised.
+-- **Where it comes from** (with mystery encounters on; `FP_BOOST_PCT`, 1 %):
+-  - 1 % of won ? battles: offered right after the battle (`Stg40_FpNoteBattle` at the
+-    encounter, the battle stage's win path notes the win, `Stg40_FpBattleBoostDue` back in the
+-    dungeon). None loses it.
+-  - 1 % of floors with a ? party: one of the floor's chests holds it instead of its item
+-    (`Stg40_FpRollChestBoost` after `Stg40_SpawnChests`). None leaves it in the chest, which
+-    stays closed (as with a full bag), to come back to.
++- **Where it comes from** (`FP_BOOST_PCT`, 1 %; F1 > Display > LvlLimitBoostr, both on by
++  default):
++  - **1% of all chests** (`boost_chests`): every chest in the domains is rolled the first
++    time it is opened (`Stg40_FpChestHasBoost`), mystery encounters or not. None leaves it in
++    the chest, which stays closed (as with a full bag), to come back to; a chest is never
++    rolled twice (per-floor masks in host notes 11 and 14).
++  - **1% of all ? encounters** (`boost_battles`): a won ? battle offers it right after the
++    battle (`Stg40_FpNoteBattle` at the encounter, the battle stage's win path notes the win,
++    `Stg40_FpBattleBoostDue` back in the dungeon). None loses it.
+ - **The prompt** (`Stg40_FpBoostPrompt`): a message box with the title, the selected party
+   Digimon (name, level / limit) or None, and a hint; Up / Down (or Left / Right) choose,
+   (X) confirms, (O) is None. A Digimon that can't take it says why. The text is the game's own
+diff --git a/host/host.h b/host/host.h
+index 6f1e862..dbcfec6 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -105,6 +105,12 @@ int Host_FpMystery(void);
+  * applied when a floor is built). */
+ void Host_SetFpMysteryRare(int on);
+ int Host_FpMysteryRare(void);
++/* FP: LvlLimitBoostr routes, on by default: 1 % of all chests ("boost_chests"), 1 % of won ?
++ * encounters ("boost_battles"). */
++void Host_SetFpBoostChests(int on);
++int Host_FpBoostChests(void);
++void Host_SetFpBoostBattles(int on);
++int Host_FpBoostBattles(void);
+ int Host_FpGetNote(int i);
+ void Host_FpSetNote(int i, int v);
+ unsigned int Host_FpRandom(void);
+diff --git a/host/main.c b/host/main.c
+index fbb95d7..4f978e3 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -539,6 +539,8 @@ HOST_ENTRY int main(int argc, char **argv) {
+     Host_SetFpSmoothTurn(Settings_Get(SET_FPSMOOTHTURN));
+     Host_SetFpMystery(Settings_Get(SET_FPMYSTERY));
+     Host_SetFpMysteryRare(Settings_Get(SET_FPMYSTRARE));
++    Host_SetFpBoostChests(Settings_Get(SET_FPBOOSTCHEST));
++    Host_SetFpBoostBattles(Settings_Get(SET_FPBOOSTBATTLE));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 6d20c21..919d3ee 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -114,6 +114,8 @@ static SDL_AtomicInt fp_ceil;    /* FP: ceilings on (F10; off by default) */
+ static SDL_AtomicInt fp_rough;   /* FP: smooth turning off (0 = on, the default) */
+ static SDL_AtomicInt fp_mystery; /* FP: mystery encounters, SET_FPMYSTERY values */
+ static SDL_AtomicInt fp_common;  /* FP: a ? holds a rarer set off (0 = on, the default) */
++static SDL_AtomicInt fp_noboostchest;  /* FP: 1 % of chests hold a LvlLimitBoostr off (0 = on) */
++static SDL_AtomicInt fp_noboostbattle; /* FP: 1 % of won ? encounters off (0 = on) */
+ /* FP: notes the dungeon code keeps here because its own data is reset after every battle
+  * (the overlay reload): per enemy party its mystery roll, and the floor's chosen party. Game
+  * thread only. */
+@@ -552,6 +554,22 @@ int Host_FpMysteryRare(void) {
+     return !SDL_GetAtomicInt(&fp_common);
+ }
+ 
++void Host_SetFpBoostChests(int on) {
++    SDL_SetAtomicInt(&fp_noboostchest, on == 0);
++}
++
++int Host_FpBoostChests(void) {
++    return !SDL_GetAtomicInt(&fp_noboostchest);
++}
++
++void Host_SetFpBoostBattles(int on) {
++    SDL_SetAtomicInt(&fp_noboostbattle, on == 0);
++}
++
++int Host_FpBoostBattles(void) {
++    return !SDL_GetAtomicInt(&fp_noboostbattle);
++}
++
+ int Host_FpGetNote(int i) {
+     return i >= 0 && i < 16 ? fp_notes[i] : 0;
+ }
+@@ -1136,6 +1154,16 @@ void Host_GameEvents(void) {
+             printf("[host] mystery rarer sets %s (F1)\n", Host_FpMysteryRare() ? "on" : "off");
+             Settings_Set(SET_FPMYSTRARE, Host_FpMysteryRare());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBOOSTCHEST], 0)) != 0 && v - 1 != Host_FpBoostChests()) {
++            Host_SetFpBoostChests(v - 1);
++            printf("[host] LvlLimitBoostr in 1%% of chests %s (F1)\n", Host_FpBoostChests() ? "on" : "off");
++            Settings_Set(SET_FPBOOSTCHEST, Host_FpBoostChests());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBOOSTBATTLE], 0)) != 0 && v - 1 != Host_FpBoostBattles()) {
++            Host_SetFpBoostBattles(v - 1);
++            printf("[host] LvlLimitBoostr from 1%% of ? encounters %s (F1)\n", Host_FpBoostBattles() ? "on" : "off");
++            Settings_Set(SET_FPBOOSTBATTLE, Host_FpBoostBattles());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+diff --git a/host/settings.c b/host/settings.c
+index 4e7880d..d2add6e 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,11 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters", "mystery_rare",
++    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters", "mystery_rare", "boost_chests", "boost_battles",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -622,6 +622,7 @@ void Settings_Load(int no_window) {
+     printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d, mystery_encounters %d, mystery_rare %d\n",
+            Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL), Settings_Get(SET_FPSMOOTHTURN),
+            Settings_Get(SET_FPMYSTERY), Settings_Get(SET_FPMYSTRARE));
++    printf("[settings] boost_chests %d, boost_battles %d\n", Settings_Get(SET_FPBOOSTCHEST), Settings_Get(SET_FPBOOSTBATTLE));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index 2806e44..63db63e 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -31,6 +31,8 @@ enum {
+     SET_FPSMOOTHTURN, /* 0 / 1: FP smooth turning in the 3D domain views, on by default */
+     SET_FPMYSTERY,    /* 0..3: FP mystery encounters: off, one per floor, 30 %, all but bosses */
+     SET_FPMYSTRARE,   /* 0 / 1: FP a ? holds one of the floor's rarer enemy sets, on by default */
++    SET_FPBOOSTCHEST, /* 0 / 1: FP 1 % of all chests hold a LvlLimitBoostr, on by default */
++    SET_FPBOOSTBATTLE, /* 0 / 1: FP 1 % of won ? encounters give a LvlLimitBoostr, on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index b00ed20..a868c3a 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -207,6 +207,8 @@ void display_tab(void) {
+     bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
+     int mystery = Settings_Get(SET_FPMYSTERY);
+     bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
++    bool boostChests = Settings_Get(SET_FPBOOSTCHEST) != 0;
++    bool boostBattles = Settings_Get(SET_FPBOOSTBATTLE) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -268,6 +270,14 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("Swaps a ? for one of the floor's less common enemy groups, from that floor's");
+     ImGui::TextDisabled("own table and levels. Takes effect from the next floor you enter.");
++    ImGui::SeparatorText("LvlLimitBoostr");
++    ImGui::TextDisabled("Raises a party Digimon's level limit by 1 (at its limit, below 99).");
++    if (ImGui::Checkbox("1% of all chests", &boostChests)) {
++        Host_RequestSetting(SET_FPBOOSTCHEST, boostChests);
++    }
++    if (ImGui::Checkbox("1% of all ? encounters", &boostBattles)) {
++        Host_RequestSetting(SET_FPBOOSTBATTLE, boostBattles);
++    }
+     if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+         Settings_Set(SET_TITLE_HINT, hint);
+     }
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+index 369cde5..a719d78 100644
+--- a/include/stag4000/fpview.h
++++ b/include/stag4000/fpview.h
+@@ -64,7 +64,7 @@ void Stg40_FpNoteBattle(void *ent);
+ s32 Stg40_FpBattleBoostDue(void);
+ void Stg40_FpRollChestBoost(void);
+ s32 Stg40_FpChestHasBoost(void *rec);
+-void Stg40_FpChestBoostTaken(void);
++void Stg40_FpChestBoostTaken(void *rec);
+ 
+ #endif
+ 
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index 65d932c..81feb69 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -918,7 +918,8 @@ void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
+ #define FP_NOTE_WON 12       /* set by the battle stage when a battle is won (stag3000) */
+ #define FP_NOTE_BATTLE 13    /* the party of the battle under way: FP_NOTE_VALID | index, mystery */
+ #define FP_NOTE_BATTLE_MYST 0x400
+-#define FP_NOTE_CHEST 14     /* the floor's LvlLimitBoostr chest: FP_NOTE_VALID | chest index */
++#define FP_NOTE_ROLLED 11    /* the floor's chests already rolled for a LvlLimitBoostr (bit mask) */
++#define FP_NOTE_CHEST 14     /* the floor's chests holding a LvlLimitBoostr (bit mask) */
+ #define FP_NOTE_CHOSEN 15
+ 
+ /* Stg40_SpawnEnemyParties, per party: its boss flag, its pick, a roll from the mod's own
+@@ -1128,9 +1129,9 @@ s32 Stg40_FpMystery(void *ent) {
+ 
+ /* A one-use item, never kept in the bag (so saves stay readable by the official port): found,
+  * it asks at once which party Digimon gets +1 to its level limit, or None. Usable on a
+- * Digimon at its limit whose limit is below 99. Found in 1 % of won ? battles (right after
+- * the battle; None loses it) and, on 1 % of floors with a ?, in one of the floor's chests
+- * (None leaves it in the chest, which stays closed). */
++ * Digimon at its limit whose limit is below 99. Found (F1 checkboxes, on by default) in 1 % of
++ * all chests, rolled the first time each is opened (None leaves it in the chest, which stays
++ * closed), and in 1 % of won ? encounters, right after the battle (None loses it). */
+ 
+ /* ASCII to game glyphs (host/devedit.c's table): '^' a new line, '{' the (X) button, '}' the
+  * (O) button, '>' the cursor; 0xFF ends. */
+@@ -1195,7 +1196,7 @@ static s32 Stg40_FpGlyphName(const u8 *name, u8 *out, s32 at, s32 max) {
+     return at;
+ }
+ 
+-#define FP_BOOST_PCT 1     /* % of won ? battles, and of floors with a ?, that give one */
++#define FP_BOOST_PCT 1     /* % of chests, and of won ? encounters, that give one */
+ #define FP_TEXT_MAX 192
+ 
+ static struct {
+@@ -1381,42 +1382,67 @@ void Stg40_FpNoteBattle(void *ent) {
+     Host_FpSetNote(FP_NOTE_BATTLE, FP_NOTE_VALID | (idx & 0xFF) | (Stg40_FpMystery(e) ? FP_NOTE_BATTLE_MYST : 0));
+ }
+ 
+-/* Back from a battle (once): a won ? battle gives a LvlLimitBoostr 1 % of the time. */
++/* Back from a battle (once): a won ? battle gives a LvlLimitBoostr 1 % of the time (F1). */
+ s32 Stg40_FpBattleBoostDue(void) {
+     s32 b = Host_FpGetNote(FP_NOTE_BATTLE);
+     s32 won = Host_FpGetNote(FP_NOTE_WON);
+ 
+     Host_FpSetNote(FP_NOTE_BATTLE, 0);
+     Host_FpSetNote(FP_NOTE_WON, 0);
+-    return (b & FP_NOTE_VALID) && (b & FP_NOTE_BATTLE_MYST) && won != 0 && Host_FpRandom() % 100 < FP_BOOST_PCT;
++    if (!(b & FP_NOTE_VALID) || !(b & FP_NOTE_BATTLE_MYST) || won == 0) {
++        return 0;
++    }
++    return Host_FpBoostBattles() && Host_FpRandom() % 100 < FP_BOOST_PCT;
+ }
+ 
+-/* After Stg40_SpawnChests on a new floor: on 1 % of floors with a ? party, one chest holds a
+- * LvlLimitBoostr. */
++/* After Stg40_SpawnChests on a new floor: no chest rolled or holding one yet. */
+ void Stg40_FpRollChestBoost(void) {
+-    s32 mode = Host_FpMystery();
+-    s32 any = 0;
+-    s32 i;
+-
++    Host_FpSetNote(FP_NOTE_ROLLED, 0);
+     Host_FpSetNote(FP_NOTE_CHEST, 0);
+-    for (i = 0; i < Dung_StatePtr->partyCount && i < FP_NOTE_PARTIES; i++) {
+-        any |= Stg40_FpMysteryIdx(i, mode);
+-    }
+-    if (any && Dung_StatePtr->chestCount > 0 && Host_FpRandom() % 100 < FP_BOOST_PCT) {
+-        Host_FpSetNote(FP_NOTE_CHEST, FP_NOTE_VALID | (s32)(Host_FpRandom() % Dung_StatePtr->chestCount));
++}
++
++/* The bit of a chest record (Stg40_SpawnChests: chests[n + 1], 12 records), -1 none. */
++static s32 Stg40_FpChestBit(void *rec) {
++    sptr off = (u8 *)rec - Dung_StatePtr->chests[0];
++
++    if (off < 0 || off % (sptr)sizeof(Dung_StatePtr->chests[0]) != 0) {
++        return -1;
+     }
++    off /= (sptr)sizeof(Dung_StatePtr->chests[0]);
++    return off < 12 ? (s32)off : -1;
+ }
+ 
+-/* The chest record (Stg40_SpawnChests: chests[n + 1]) holds a LvlLimitBoostr. */
++/* The chest holds a LvlLimitBoostr (asked once as it is opened, Stg40_PlayerTakeChestItem):
++ * every chest is rolled the first time it is opened, 1 % (F1); one left with None keeps it. */
+ s32 Stg40_FpChestHasBoost(void *rec) {
+-    s32 v = Host_FpGetNote(FP_NOTE_CHEST);
++    s32 bit = Stg40_FpChestBit(rec);
++    s32 rolled;
+ 
+-    return (v & FP_NOTE_VALID) && (u8 *)rec == Dung_StatePtr->chests[(v & 0xFF) + 1];
++    if (bit < 0) {
++        return 0;
++    }
++    if (Host_FpGetNote(FP_NOTE_CHEST) & (1 << bit)) {
++        return 1;
++    }
++    rolled = Host_FpGetNote(FP_NOTE_ROLLED);
++    if (rolled & (1 << bit)) {
++        return 0; /* rolled before: a bag that was full can't roll it again */
++    }
++    Host_FpSetNote(FP_NOTE_ROLLED, rolled | (1 << bit));
++    if (Host_FpBoostChests() && Host_FpRandom() % 100 < FP_BOOST_PCT) {
++        Host_FpSetNote(FP_NOTE_CHEST, Host_FpGetNote(FP_NOTE_CHEST) | (1 << bit));
++        return 1;
++    }
++    return 0;
+ }
+ 
+ /* The chest's LvlLimitBoostr was used. */
+-void Stg40_FpChestBoostTaken(void) {
+-    Host_FpSetNote(FP_NOTE_CHEST, 0);
++void Stg40_FpChestBoostTaken(void *rec) {
++    s32 bit = Stg40_FpChestBit(rec);
++
++    if (bit >= 0) {
++        Host_FpSetNote(FP_NOTE_CHEST, Host_FpGetNote(FP_NOTE_CHEST) & ~(1 << bit));
++    }
+ }
+ 
+ /* POLY_G3 (gouraud flat triangle), 0x1C bytes, 6 words after the tag. */
+diff --git a/src/stag4000/player.c b/src/stag4000/player.c
+index a5f74d5..10a35d7 100644
+--- a/src/stag4000/player.c
++++ b/src/stag4000/player.c
+@@ -1117,15 +1117,16 @@ void Stg40_PlayerTakeChestItem(Actor *a0) {
+     u8 *d = Stg40_RootState->targetEnt->params;
+ 
+ #ifdef DW2_NATIVE
+-    /* FP: a LvlLimitBoostr in this chest: used at once on a party Digimon (the chest opens),
+-     * or None (it stays in the chest, which stays closed, as with a full bag) */
++    /* FP: a LvlLimitBoostr in this chest (1 % of chests): used at once on a party Digimon
++     * (the chest opens), or None (it stays in the chest, which stays closed, as with a full
++     * bag) */
+     if (a0->stateLevel2 >= 10 || (a0->stateLevel2 == 0 && Stg40_FpChestHasBoost(d))) {
+         if (a0->stateLevel2 == 0) {
+             Task_SetState2(a0, 10);
+         }
+         switch (Stg40_FpBoostPrompt(a0, 1)) {
+         case 1:
+-            Stg40_FpChestBoostTaken();
++            Stg40_FpChestBoostTaken(d);
+             Task_SetState1(t, 5);
+             Task_SetState1(a0, 6);
+             break;
+diff --git a/src/stag4000/stag4000.c b/src/stag4000/stag4000.c
+index f1efc9d..0ef2014 100644
+--- a/src/stag4000/stag4000.c
++++ b/src/stag4000/stag4000.c
+@@ -172,7 +172,7 @@ void Stg40_SetupStage(Actor *a0) {
+         Stg40_SpawnEnemyParties();
+         Stg40_SpawnChests();
+ #ifdef DW2_NATIVE
+-        Stg40_FpRollChestBoost(); /* FP: a LvlLimitBoostr in a chest, on 1 % of floors with a ? */
++        Stg40_FpRollChestBoost(); /* FP: LvlLimitBoostr chests: none rolled yet on this floor */
+ #endif
+         Stg40_SpawnFixedHazards();
+         Stg40_ApplyTrapCells();
+-- 
+2.43.0
+

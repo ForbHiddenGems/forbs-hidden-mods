@@ -1,0 +1,325 @@
+From 7cd82273b9bad8d46fc025d6229f5447b065ad87 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Sun, 25 Oct 2026 23:36:21 +0000
+Subject: [PATCH 04/26] First-person domains: minimap facing arrow, ceiling on
+ / off setting
+
+In first person a yellow arrow over the beetle on both automap views points
+the way the view faces. Ceilings get a setting (F1 > Display, fp_ceiling,
+on by default).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  |  5 ++-
+ host/host.h                    |  3 ++
+ host/main.c                    |  1 +
+ host/sdl.c                     | 14 ++++++
+ host/settings.c                |  8 ++--
+ host/settings.h                |  1 +
+ host/settingsui.cpp            |  5 +++
+ include/stag4000/fpview.h      |  3 ++
+ src/stag4000/automap.c         | 10 +++++
+ src/stag4000/fpview_math.inc   |  1 -
+ src/stag4000/fpview_native.inc | 81 +++++++++++++++++++++++++++++++++-
+ 11 files changed, 125 insertions(+), 7 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index 8fb9122..6c4bf6b 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -35,7 +35,8 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   the floor never takes room from the game's models. Without precise geometry (no wobble and
+   smooth frames both off) floors are cut 2 x 2 and walls 2 x 1 against affine texture warp.
+ - **Ceilings** on walled floors (walls going up): each floor tile gets a ceiling at the wall
+-  tops with its own floor texture, a little darker (`FP_CEILING`, `FP_CEILING_SHADE`).
++  tops with its own floor texture, a little darker (`FP_CEILING_SHADE`). On / off in F1 >
++  Display > Ceilings in first person (`fp_ceiling` in `settings.ini`).
+   Platform floors have no walls above them, so they stay open to the black background.
+ - **Walls** keep the retail templates and the retail cull rule (`Stg40_DrawTileWalls`), so
+   walled floors show walls from inside, and platform floors (cliffs going down) show the
+@@ -43,6 +44,8 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+ - **Square tiles**: retail rows are 0x800 deep and columns 0xA00 wide (made for the angled
+   overhead camera). In first person both are 0xA00, and entity positions go through
+   `Stg40_FpWorldX / Z` to match. The FP world is centred on the beetle.
++- **Minimap arrow**: in first person a yellow arrow over the beetle on both automap views
++  points the way the view faces and turns with it (`Stg40_FpDrawMapArrow`).
+ - **Entities** beyond the retail 5-tile window are drawn through the 16:9 side models
+   (out to the radius). Models behind the eye are dropped by the GTE error flags per bone.
+ - **The beetle** and the models linked to it are not drawn (their anims still run).
+diff --git a/host/host.h b/host/host.h
+index 1960be8..7274e6a 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -89,6 +89,9 @@ void Host_SmoothCamera(const int *v, int n, int hard);
+  * (src/stag4000/fpview_native.inc). */
+ void Host_SetFpView(int on);
+ int Host_FpView(void);
++/* FP: ceilings over walled domains (F1, settings "fp_ceiling", on by default). */
++void Host_SetFpCeiling(int on);
++int Host_FpCeiling(void);
+ /* The HD renderer draws precise, perspective-correct polygons now (no wobble or smooth frames). */
+ int Host_PreciseGeometry(void);
+ /* PG.3, for the game C (DW2_NATIVE): extra screen pixels on each side of a picture `width` wide
+diff --git a/host/main.c b/host/main.c
+index 53b1e5d..5ebbf8a 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -535,6 +535,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+         Host_SetSmooth(1); /* PR.34, also with --smooth */
+     }
+     Host_SetFpView(Settings_Get(SET_FPVIEW)); /* FP, also with --fpview */
++    Host_SetFpCeiling(Settings_Get(SET_FPCEIL));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 3185bd9..72a60f0 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -110,6 +110,7 @@ static int last_sharpen = 50;  /* F8 turns sharpening back on at this strength *
+ static const char *volatile quit_why = "window closed";
+ static SDL_AtomicInt smooth_on;  /* PR.34: smooth frames active (game side sets it) */
+ static SDL_AtomicInt fp_view;    /* FP: first-person view in the domains (F4), read by the game C */
++static SDL_AtomicInt fp_noceil;  /* FP: ceilings off (0 = on, the default) */
+ static int shown_vsync;          /* main thread: the renderer's vsync */
+ static int vsync_ok = 1;         /* main thread: vsync could be turned on */
+ static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
+@@ -512,6 +513,14 @@ int Host_FpView(void) {
+     return SDL_GetAtomicInt(&fp_view);
+ }
+ 
++void Host_SetFpCeiling(int on) {
++    SDL_SetAtomicInt(&fp_noceil, on == 0);
++}
++
++int Host_FpCeiling(void) {
++    return !SDL_GetAtomicInt(&fp_noceil);
++}
++
+ void Host_SmoothLattice(int px, int py, int pz) {
+     Pgxp_Lattice(px, py, pz);
+ }
+@@ -1043,6 +1052,11 @@ void Host_GameEvents(void) {
+             printf("[host] first-person view %s (F1)\n", Host_FpView() ? "on" : "off");
+             Settings_Set(SET_FPVIEW, Host_FpView());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPCEIL], 0)) != 0 && v - 1 != Host_FpCeiling()) {
++            Host_SetFpCeiling(v - 1);
++            printf("[host] first-person ceilings %s (F1)\n", Host_FpCeiling() ? "on" : "off");
++            Settings_Set(SET_FPCEIL, Host_FpCeiling());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+diff --git a/host/settings.c b/host/settings.c
+index 59bd946..4f11b46 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,11 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu", "fpview",
++    "select_hold_menu", "fpview", "fp_ceiling",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+diff --git a/host/settings.h b/host/settings.h
+index 9a209fa..e35f5a8 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -27,6 +27,7 @@ enum {
+     SET_SMOOTH,       /* 0 / 1: PR.34 smooth frames (F9), on by default */
+     SET_SELECT_HOLD,  /* 0 / 1: PR.38 Select held 1 s opens F1 (issue #5), on by default */
+     SET_FPVIEW,       /* 0 / 1: FP first-person view in the domains (F4), off by default */
++    SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains, on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index e86a0e0..146206b 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -202,6 +202,7 @@ void display_tab(void) {
+     int sharpen = Settings_Get(SET_SHARPEN);
+     bool smooth = Settings_Get(SET_SMOOTH) != 0;
+     bool fpview = Settings_Get(SET_FPVIEW) != 0;
++    bool fpceil = Settings_Get(SET_FPCEIL) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -234,6 +235,10 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("Look out of the Digi-Beetle in the domains. Up moves forward, Left / Right");
+     ImGui::TextDisabled("turn, Down turns around, Up + Left / Right steps diagonally.");
++    if (ImGui::Checkbox("Ceilings in first person", &fpceil)) {
++        Host_RequestSetting(SET_FPCEIL, fpceil);
++    }
++    ImGui::TextDisabled("A roof with the floor's own texture over walled domains.");
+     if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+         Settings_Set(SET_TITLE_HINT, hint);
+     }
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+index e6f30d6..716b755 100644
+--- a/include/stag4000/fpview.h
++++ b/include/stag4000/fpview.h
+@@ -40,6 +40,9 @@ void Stg40_FpSetCamera(void *cameraWork);
+ void Stg40_FpDrawFloor(void *floorWork);
+ void Stg40_FpDrawShadow(void *loc);
+ void Stg40_FpReset(void);
++/* automap.c: the view's facing as an arrow over the beetle on an automap window (before
++ * Stg40_AutomapDrawWindow with the same x, y, cx, cy, scale; fade 0..0xFF). */
++void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade);
+ 
+ #endif
+ 
+diff --git a/src/stag4000/automap.c b/src/stag4000/automap.c
+index b575734..5502340 100644
+--- a/src/stag4000/automap.c
++++ b/src/stag4000/automap.c
+@@ -12,6 +12,9 @@
+ #include "stag4000/player.h"
+ #include "stag4000/enemy.h"
+ #include "stag4000/entity.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptor comes first). */
+ void Stg40_AutomapInit(void);
+@@ -440,9 +443,16 @@ void Stg40_AutomapDrawModes(ActorWork *w) {
+             switch (i) {
+             case 0:
+                 loc = Dung_StatePtr->playerLoc;
++#ifdef DW2_NATIVE
++                /* FP: the facing arrow, linked first so it draws over the window */
++                Stg40_FpDrawMapArrow(0x50, 0, loc->u0.pair.field_0, loc->u0.pair.field_2, 3, t->modeFade[0]);
++#endif
+                 Stg40_AutomapDrawWindow(t, 0x50, 0, loc->u0.pair.field_0, loc->u0.pair.field_2, 0x11, 0x11, 3, t->modeFade[0]);
+                 break;
+             case 1:
++#ifdef DW2_NATIVE
++                Stg40_FpDrawMapArrow(0, 0, 0x20, 0x18, 4, t->modeFade[1]);
++#endif
+                 Stg40_AutomapDrawWindow(t, 0, 0, 0x20, 0x18, 0x41, 0x31, 4, t->modeFade[1]);
+                 break;
+             }
+diff --git a/src/stag4000/fpview_math.inc b/src/stag4000/fpview_math.inc
+index 3f09645..19f6e3a 100644
+--- a/src/stag4000/fpview_math.inc
++++ b/src/stag4000/fpview_math.inc
+@@ -18,7 +18,6 @@
+ #define FP_FOG_END (FP_TILE * (STG40_FP_RADIUS - 0.5f))
+ #define FP_FLOOR_BIAS 96        /* OT entries a floor sorts behind its centre (entities on it) */
+ #define FP_SHADOW_BIAS (FP_FLOOR_BIAS - 6)
+-#define FP_CEILING 1            /* ceilings over floor tiles on walled floors, floor texture */
+ #define FP_CEILING_SHADE 0x58   /* ceilings a little darker than the floor (0x7F) */
+ #define FP_TURN_STEP 0x100      /* camera yaw per frame (as the beetle turns) */
+ #define FP_PACKET_BYTES 0x18000 /* the floor's own packet area per frame buffer */
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index 88f577c..79cd6dc 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -419,7 +419,7 @@ static void Stg40_FpDrawCell(Stg40FpCtx *c, Stg40FloorWork *w, s32 mapCol, s32 m
+                       FP_FLOOR_BIAS, sub, sub);
+         /* ceiling: the same tile's floor texture at the wall tops, on floors whose walls go
+          * up (step < 0); platform floors have no walls above to close it */
+-        if (FP_CEILING && step < 0) {
++        if (Host_FpCeiling() && step < 0) {
+             for (i = 0; i < 4; i++) {
+                 p[i][1] = (float)step;
+             }
+@@ -533,3 +533,82 @@ void Stg40_FpDrawShadow(void *locp) {
+                   FP_SHADOW_BIAS, 1, 1);
+     Stg40_FpEnd(&c);
+ }
++
++/* ---- minimap arrow ----------------------------------------------------------------------- */
++
++/* POLY_F3 (flat triangle), 0x14 bytes, 4 words after the tag. */
++typedef struct {
++    Stg40Tag tag;
++    u8 r0, g0, b0, code;
++    s16 x0, y0;
++    s16 x1, y1;
++    s16 x2, y2;
++} Stg40FpF3;
++
++static void Stg40_FpMapTri(s32 *ot, const float *pts, u8 r, u8 g, u8 b) {
++    Stg40FpF3 *t = (Stg40FpF3 *)(sptr)Sys_State.packet.addr;
++
++    t->tag.word = 0;
++    t->tag.b.len = 4;
++    t->code = 0x20;
++    t->r0 = r;
++    t->g0 = g;
++    t->b0 = b;
++    t->x0 = (s16)lrintf(pts[0]);
++    t->y0 = (s16)lrintf(pts[1]);
++    t->x1 = (s16)lrintf(pts[2]);
++    t->y1 = (s16)lrintf(pts[3]);
++    t->x2 = (s16)lrintf(pts[4]);
++    t->y2 = (s16)lrintf(pts[5]);
++    t->tag.word = (t->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++    *ot = (*ot & 0xFF000000) | ((s32)(sptr)t & 0xFFFFFF);
++    Sys_State.packet.addr = (s32)(sptr)(t + 1);
++}
++
++/* The beetle's facing on the automap window Stg40_AutomapDrawWindow draws at x, y around cell
++ * (cx, cy) with `scale` pixels per cell: an arrow over the beetle's dot. Called before that
++ * window links its quads into the same OT entry, so it draws over them (an entry draws its
++ * packets newest first). A cell's texel is col + 4 (pix rows start one halfword in) and the
++ * window shows texel left + 3 at x + (left - cx) * scale, so cell col sits at
++ * x + (col + 1 - cx) * scale, row at y + (row + 1 - cy) * scale. */
++void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
++    Stg40Loc *loc = Dung_StatePtr->playerLoc;
++    s32 *ot = Sys_State.otLayers.s[1];
++    float sx;
++    float sy;
++    float a;
++    float dx;
++    float dy;
++    float px;
++    float py;
++    float pts[6];
++    float k;
++    s32 pass;
++
++    if (!Stg40_FpActive() || loc == NULL || fade <= 0) {
++        return;
++    }
++    Stg40_FpSync(Stg40_RootState->playerEnt);
++    sx = x + (loc->posX / 64.0f + 1.5f - cx) * scale;
++    sy = y + (loc->posY / 64.0f + 1.5f - cy) * scale;
++    a = Stg40_FpYaw * (float)(2.0 * 3.14159265358979323846 / 4096.0);
++    dx = -sinf(a); /* map direction of the view (x right, y down, as on screen) */
++    dy = cosf(a);
++    px = -dy;      /* perpendicular */
++    py = dx;
++    /* the arrow first, then its dark outline: the outline (linked later) draws first */
++    for (pass = 0; pass < 2; pass++) {
++        k = pass == 0 ? 1.0f : 1.45f;
++        pts[0] = sx + dx * 1.7f * scale * k;
++        pts[1] = sy + dy * 1.7f * scale * k;
++        pts[2] = sx - dx * 1.0f * scale * k + px * 1.1f * scale * k;
++        pts[3] = sy - dy * 1.0f * scale * k + py * 1.1f * scale * k;
++        pts[4] = sx - dx * 1.0f * scale * k - px * 1.1f * scale * k;
++        pts[5] = sy - dy * 1.0f * scale * k - py * 1.1f * scale * k;
++        if (pass == 0) {
++            Stg40_FpMapTri(ot, pts, (u8)(0xFF * fade / 0xFF), (u8)(0xDC * fade / 0xFF), (u8)(0x28 * fade / 0xFF));
++        } else {
++            Stg40_FpMapTri(ot, pts, (u8)(0x20 * fade / 0xFF), (u8)(0x18 * fade / 0xFF), 0);
++        }
++    }
++}
+-- 
+2.43.0
+

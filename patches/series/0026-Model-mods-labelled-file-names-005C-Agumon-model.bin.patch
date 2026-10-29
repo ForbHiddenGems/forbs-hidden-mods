@@ -1,0 +1,89 @@
+From 7c7abd0aa221eec16a57750128844e24528ff0ee Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 20:05:25 +0000
+Subject: [PATCH 26/26] Model mods: labelled file names ("005C Agumon
+ model.bin")
+
+A mods file may carry a label after its 4-digit number, after a space, "_" or
+"-": only the first 4 characters say which game file it replaces. A number
+that is in one folder twice is reported in the log (the first one read is
+used).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/mods.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/host/mods.c b/host/mods.c
+index bdb6b47..301d4ae 100644
+--- a/host/mods.c
++++ b/host/mods.c
+@@ -19,6 +19,9 @@
+ static void *mod_data[MOD_IDS];
+ static int mod_size[MOD_IDS];
+ static int mod_count;
++static unsigned char mod_dir[MOD_IDS]; /* which folder it came from (1, 2, ...), for duplicates */
++static char *mod_name[MOD_IDS];
++static int dir_index;
+ 
+ static int hexval(char c) {
+     if (c >= '0' && c <= '9') return c - '0';
+@@ -27,12 +30,17 @@ static int hexval(char c) {
+     return -1;
+ }
+ 
+-/* "0A12.bin" -> 0xA12 ("1AA0.bin" for new files), else -1 */
++/* "0A12.bin" -> 0xA12 ("1AA0.bin" for new files), else -1. A label may follow the number after a
++ * space, "_" or "-": "005C Agumon model.bin" is file 005C too (only the first 4 characters count). */
+ static int mod_id(const char *name) {
++    size_t n = strlen(name);
+     int id = 0;
+     int i;
+ 
+-    if (strlen(name) != 8 || SDL_strcasecmp(name + 4, ".bin") != 0) {
++    if (n < 8 || SDL_strcasecmp(name + n - 4, ".bin") != 0) {
++        return -1;
++    }
++    if (n > 8 && name[4] != ' ' && name[4] != '_' && name[4] != '-') {
+         return -1;
+     }
+     for (i = 0; i < 4; i++) {
+@@ -52,6 +60,9 @@ static SDL_EnumerationResult SDLCALL scan_one(void *dir, const char *dirname, co
+     int id = mod_id(name);
+ 
+     (void)dir;
++    if (id >= 0 && mod_data[id] != NULL && mod_dir[id] == dir_index) {
++        printf("[mods] skipped %s%s: file %04X is already %s in this folder\n", dirname, name, id, mod_name[id]);
++    }
+     if (id < 0 || mod_data[id] != NULL) {
+         return SDL_ENUM_CONTINUE; /* not a mod file, or already taken from a folder read earlier */
+     }
+@@ -63,6 +74,8 @@ static SDL_EnumerationResult SDLCALL scan_one(void *dir, const char *dirname, co
+     } else {
+         mod_data[id] = data;
+         mod_size[id] = (int)size;
++        mod_dir[id] = dir_index;
++        mod_name[id] = SDL_strdup(name);
+         mod_count++;
+         printf("[mods] file %04X <- %s (%d bytes)\n", id, path, (int)size);
+     }
+@@ -79,6 +92,7 @@ static void scan(const char *base) {
+     }
+     SDL_asprintf(&dir, "%smods", base);
+     if (dir != NULL && SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
++        dir_index++;
+         SDL_EnumerateDirectory(dir, scan_one, NULL);
+     }
+     SDL_free(dir);
+@@ -116,6 +130,7 @@ static void scan_listed(const char *base) {
+             SDL_PathInfo info;
+             if (SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
+                 printf("[mods] reading %s (from mods-folder.txt)\n", dir);
++                dir_index++;
+                 SDL_EnumerateDirectory(dir, scan_one, NULL);
+             } else {
+                 printf("[mods] mods-folder.txt names %s, which is not a folder\n", dir);
+-- 
+2.43.0
+

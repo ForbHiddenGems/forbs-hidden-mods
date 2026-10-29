@@ -1,0 +1,209 @@
+From 31ce9e163bfbd4a91c9c6f9544bdc51d522dc855 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 19:54:33 +0000
+Subject: [PATCH 05/26] First-person domains: F10 toggles ceilings, off by
+ default
+
+New settings key fp_ceilings (default 0), so an older fp_ceiling = 1 line
+no longer turns them on. The startup log lists fpview and fp_ceilings.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ README.md           |  1 +
+ doc/FPVIEW.md       |  7 ++++---
+ host/host.h         |  2 +-
+ host/sdl.c          | 18 ++++++++++++++----
+ host/settings.c     |  8 +++++---
+ host/settings.h     |  2 +-
+ host/settingsui.cpp |  2 +-
+ host/ui.cpp         |  3 ++-
+ 8 files changed, 29 insertions(+), 14 deletions(-)
+
+diff --git a/README.md b/README.md
+index c49fc7e..eeec161 100644
+--- a/README.md
++++ b/README.md
+@@ -167,6 +167,7 @@ Default bindings (change them in the F1 settings window):
+ | F1 | Settings window (Esc closes it). Holding Select (Backspace, or Back / Select on a gamepad) for 1 second opens it too; Start or Select on a gamepad closes it |
+ | F3 | Speed-up on / off ("Speed unlocked" / "Speed locked") |
+ | F4 | First-person domains on / off ([doc/FPVIEW.md](doc/FPVIEW.md)) |
++| F10 | First-person ceilings on / off |
+ | F5 | Render scale 1x .. 8x |
+ | F6 | No wobble on / off |
+ | F7 | 16:9 on / off |
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index 6c4bf6b..0a05052 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -2,7 +2,7 @@
+ 
+ A native-only mod for the PC port: the camera sits in the Digi-Beetle and looks along its
+ facing while you explore the domains. Toggle it with **F4** or in **F1 > Display > First-person
+-domains**. It is saved as `fpview = 1` in `settings.ini`, or set for one run with `--fpview`.
++domains**; **F10** turns ceilings on and off. It is saved as `fpview = 1` in `settings.ini`, or set for one run with `--fpview`.
+ 
+ ## Controls in first person
+ 
+@@ -35,8 +35,9 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   the floor never takes room from the game's models. Without precise geometry (no wobble and
+   smooth frames both off) floors are cut 2 x 2 and walls 2 x 1 against affine texture warp.
+ - **Ceilings** on walled floors (walls going up): each floor tile gets a ceiling at the wall
+-  tops with its own floor texture, a little darker (`FP_CEILING_SHADE`). On / off in F1 >
+-  Display > Ceilings in first person (`fp_ceiling` in `settings.ini`).
++  tops with its own floor texture, a little darker (`FP_CEILING_SHADE`). Off by default;
++  **F10** or F1 > Display > Ceilings in first person turns them on (`fp_ceilings` in
++  `settings.ini`).
+   Platform floors have no walls above them, so they stay open to the black background.
+ - **Walls** keep the retail templates and the retail cull rule (`Stg40_DrawTileWalls`), so
+   walled floors show walls from inside, and platform floors (cliffs going down) show the
+diff --git a/host/host.h b/host/host.h
+index 7274e6a..9fa8e22 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -89,7 +89,7 @@ void Host_SmoothCamera(const int *v, int n, int hard);
+  * (src/stag4000/fpview_native.inc). */
+ void Host_SetFpView(int on);
+ int Host_FpView(void);
+-/* FP: ceilings over walled domains (F1, settings "fp_ceiling", on by default). */
++/* FP: ceilings over walled domains (F10 or F1, settings "fp_ceilings", off by default). */
+ void Host_SetFpCeiling(int on);
+ int Host_FpCeiling(void);
+ /* The HD renderer draws precise, perspective-correct polygons now (no wobble or smooth frames). */
+diff --git a/host/sdl.c b/host/sdl.c
+index 72a60f0..678d64f 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -64,7 +64,7 @@
+ #define SLOTS 3
+ 
+ enum { REQ_SCALE = 1, REQ_WIDE = 2, REQ_PGXP = 4, REQ_SHOT = 8, REQ_QUIT = 16, REQ_SETTING = 32, REQ_SHARPEN = 64,
+-       REQ_SPEED = 128, REQ_SMOOTH = 256, REQ_FPVIEW = 512 };
++       REQ_SPEED = 128, REQ_SMOOTH = 256, REQ_FPVIEW = 512, REQ_FPCEIL = 1024 };
+ 
+ typedef struct {
+     int kind;      /* 0 black, 1 1x picture, 2 software HD picture, 3 GPU texture */
+@@ -110,7 +110,7 @@ static int last_sharpen = 50;  /* F8 turns sharpening back on at this strength *
+ static const char *volatile quit_why = "window closed";
+ static SDL_AtomicInt smooth_on;  /* PR.34: smooth frames active (game side sets it) */
+ static SDL_AtomicInt fp_view;    /* FP: first-person view in the domains (F4), read by the game C */
+-static SDL_AtomicInt fp_noceil;  /* FP: ceilings off (0 = on, the default) */
++static SDL_AtomicInt fp_ceil;    /* FP: ceilings on (F10; off by default) */
+ static int shown_vsync;          /* main thread: the renderer's vsync */
+ static int vsync_ok = 1;         /* main thread: vsync could be turned on */
+ static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
+@@ -514,11 +514,11 @@ int Host_FpView(void) {
+ }
+ 
+ void Host_SetFpCeiling(int on) {
+-    SDL_SetAtomicInt(&fp_noceil, on == 0);
++    SDL_SetAtomicInt(&fp_ceil, on != 0);
+ }
+ 
+ int Host_FpCeiling(void) {
+-    return !SDL_GetAtomicInt(&fp_noceil);
++    return SDL_GetAtomicInt(&fp_ceil);
+ }
+ 
+ void Host_SmoothLattice(int px, int py, int pz) {
+@@ -961,6 +961,9 @@ void Host_PumpEvents(void) {
+                 if (e.key.scancode == SDL_SCANCODE_F4) {
+                     request(REQ_FPVIEW);
+                 }
++                if (e.key.scancode == SDL_SCANCODE_F10) {
++                    request(REQ_FPCEIL);
++                }
+                 if (e.key.scancode == SDL_SCANCODE_F3) {
+                     request(REQ_SPEED);
+                 }
+@@ -1082,6 +1085,13 @@ void Host_GameEvents(void) {
+         Settings_Set(SET_SMOOTH, PsxHd_Smooth());
+         fflush(stdout);
+     }
++    if (r & REQ_FPCEIL) {
++        Host_SetFpCeiling(!Host_FpCeiling());
++        printf("[host] first-person ceilings %s (F10)\n", Host_FpCeiling() ? "on" : "off");
++        notice("First-person ceilings %s (F10)", Host_FpCeiling() ? "on" : "off");
++        Settings_Set(SET_FPCEIL, Host_FpCeiling());
++        fflush(stdout);
++    }
+     if (r & REQ_FPVIEW) {
+         Host_SetFpView(!Host_FpView());
+         printf("[host] first-person view %s (F4)\n", Host_FpView() ? "on" : "off");
+diff --git a/host/settings.c b/host/settings.c
+index 4f11b46..edef69b 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,9 +46,9 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu", "fpview", "fp_ceiling",
++    "select_hold_menu", "fpview", "fp_ceilings",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0 };
+ static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+ static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+@@ -266,7 +266,8 @@ void Settings_SetPad(int bit, int code) {
+ int Settings_KeyReserved(int sc) {
+     return sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_F2 ||
+            sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F10 || sc == SDL_SCANCODE_F11 ||
++           sc == SDL_SCANCODE_F12;
+ }
+ 
+ const char *Settings_ButtonName(int bit) {
+@@ -618,6 +619,7 @@ void Settings_Load(int no_window) {
+     printf("[settings] sharpen %d, title_hint %d, speed %d, update_check %d, smooth %d, select_hold_menu %d\n",
+            Settings_Get(SET_SHARPEN), Settings_Get(SET_TITLE_HINT), Settings_Get(SET_SPEED),
+            Settings_Get(SET_UPDATE_CHECK), Settings_Get(SET_SMOOTH), Settings_Get(SET_SELECT_HOLD));
++    printf("[settings] fpview %d, fp_ceilings %d\n", Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index e35f5a8..b660e64 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -27,7 +27,7 @@ enum {
+     SET_SMOOTH,       /* 0 / 1: PR.34 smooth frames (F9), on by default */
+     SET_SELECT_HOLD,  /* 0 / 1: PR.38 Select held 1 s opens F1 (issue #5), on by default */
+     SET_FPVIEW,       /* 0 / 1: FP first-person view in the domains (F4), off by default */
+-    SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains, on by default */
++    SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains (F10), off by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 146206b..11d8561 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -235,7 +235,7 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("Look out of the Digi-Beetle in the domains. Up moves forward, Left / Right");
+     ImGui::TextDisabled("turn, Down turns around, Up + Left / Right steps diagonally.");
+-    if (ImGui::Checkbox("Ceilings in first person", &fpceil)) {
++    if (ImGui::Checkbox("Ceilings in first person (F10)", &fpceil)) {
+         Host_RequestSetting(SET_FPCEIL, fpceil);
+     }
+     ImGui::TextDisabled("A roof with the floor's own texture over walled domains.");
+diff --git a/host/ui.cpp b/host/ui.cpp
+index b6c977d..7706915 100644
+--- a/host/ui.cpp
++++ b/host/ui.cpp
+@@ -220,7 +220,8 @@ void write_shot(void) {
+ 
+ bool is_hotkey(SDL_Scancode sc) {
+     return sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F10 || sc == SDL_SCANCODE_F11 ||
++           sc == SDL_SCANCODE_F12;
+ }
+ 
+ } // namespace
+-- 
+2.43.0
+

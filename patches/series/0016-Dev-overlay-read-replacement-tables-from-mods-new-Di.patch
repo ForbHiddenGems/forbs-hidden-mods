@@ -1,0 +1,42 @@
+From 0ee2e0f90deb5ca5f91c47fd89cef4b56ec810aa Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 22:37:07 +0000
+Subject: [PATCH 16/26] Dev overlay: read replacement tables from mods/ (new
+ Digimon and items show up)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/devdata.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/host/devdata.c b/host/devdata.c
+index f972436..d60c201 100644
+--- a/host/devdata.c
++++ b/host/devdata.c
+@@ -226,6 +226,22 @@ void DevData_InitConst(void) {
+ }
+ 
+ static int read_file(int id, File *f) {
++    int mod_size;
++    const void *mod = Host_ModFile(id, &mod_size);
++
++    if (mod != NULL) {
++        /* a replacement in mods/ (host/mods.c): what the game itself reads, so new Digimon
++         * and items show in the overlay too */
++        f->data = (uint8_t *)malloc((size_t)mod_size);
++        f->size = mod_size;
++        if (f->data != NULL && mod_size >= 16) {
++            memcpy(f->data, mod, (size_t)mod_size);
++            return 1;
++        }
++        free(f->data);
++        f->data = NULL;
++        return 0;
++    }
+     f->data = (uint8_t *)Host_PakReadFile(id, &f->size);
+     if (f->data == NULL || f->size < 16) {
+         printf("[devdata] file 0x%03X: cannot read from the pack\n", id);
+-- 
+2.43.0
+

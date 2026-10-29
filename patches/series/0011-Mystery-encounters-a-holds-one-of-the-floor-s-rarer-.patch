@@ -1,0 +1,466 @@
+From ecf5664fd3a03b69fedddde3b265b0c4f6168606 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 21:22:38 +0000
+Subject: [PATCH 11/26] Mystery encounters: a ? holds one of the floor's rarer
+ enemy groups
+
+When a floor is built, each party that will show as a ? is swapped for a set
+from that floor's own table that the floor lists less often (counted over all
+its layouts' spawn picks), weighted toward the rarest; never a boss set, and
+one already the rarest stays. The party and its map model are filled in as the
+game fills a new one. F1 checkbox, setting mystery_rare (on by default).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  |  10 +-
+ host/host.h                    |   4 +
+ host/main.c                    |   1 +
+ host/sdl.c                     |  14 +++
+ host/settings.c                |  12 +-
+ host/settings.h                |   1 +
+ host/settingsui.cpp            |   6 +
+ include/stag4000/fpview.h      |   7 +-
+ src/stag4000/fpview_native.inc | 202 ++++++++++++++++++++++++++++-----
+ src/stag4000/spawn.c           |   4 +-
+ 10 files changed, 222 insertions(+), 39 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index afd6c29..af8c413 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -15,7 +15,8 @@ starts in first person. **F10** turns ceilings on and off. **Smooth turning** (F
+ on by default, `smooth_turns`) eases the camera and the beetle round when it turns.
+ **Mystery encounters** (F1 > Display, `mystery_encounters`) show wandering Digimon as a
+ floating ? until the battle starts: 1 per floor, 30% of encounters, all except bosses, or off
+-(the default). It works in every view, Classic too.
++(the default). It works in every view, Classic too. **A ? holds a rarer Digimon** (F1, on by
++default, `mystery_rare`) swaps each ? for one of its floor's less common enemy groups.
+ 
+ ## Controls in the 3D views
+ 
+@@ -95,6 +96,13 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   beetle uses); its shadow stays and a yellow ? floats over it, bobbing, facing the camera
+   (`Stg40_FpDrawMystery`), in both the retail draw window and the far side models.
+ - **Enemy info** (Square) leaves mystery parties off its list.
++- **Rarer Digimon** (`Stg40_FpSwapRarer`, when the floor is built, under the settings of that
++  moment): a floor has up to four enemy sets (`enemySets`), and every spawn point of every
++  layout of the floor lists four picks among them, so a set listed fewer times turns up less
++  often. A party that will show as a ? becomes a set the floor uses that is strictly rarer
++  than its own, weighted 1 / count toward the rarest; already the rarest, it stays. Never a
++  boss set. The party (Digimon, levels, AI, pace, gift) and its map model are filled in as
++  `Stg40_SpawnEnemyParties` fills a new one, so the floor's own table and levels hold.
+ 
+ ## Tuning
+ 
+diff --git a/host/host.h b/host/host.h
+index bcc69b3..6f1e862 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -101,6 +101,10 @@ int Host_FpSmoothTurn(void);
+  * battle; Host_FpRandom is the mod's own generator (never the game's). */
+ void Host_SetFpMystery(int mode);
+ int Host_FpMystery(void);
++/* FP: a ? holds one of the floor's rarer enemy sets (settings "mystery_rare", on by default;
++ * applied when a floor is built). */
++void Host_SetFpMysteryRare(int on);
++int Host_FpMysteryRare(void);
+ int Host_FpGetNote(int i);
+ void Host_FpSetNote(int i, int v);
+ unsigned int Host_FpRandom(void);
+diff --git a/host/main.c b/host/main.c
+index eda13ac..fbb95d7 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -538,6 +538,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     Host_SetFpCeiling(Settings_Get(SET_FPCEIL));
+     Host_SetFpSmoothTurn(Settings_Get(SET_FPSMOOTHTURN));
+     Host_SetFpMystery(Settings_Get(SET_FPMYSTERY));
++    Host_SetFpMysteryRare(Settings_Get(SET_FPMYSTRARE));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 3bd3911..6d20c21 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -113,6 +113,7 @@ static SDL_AtomicInt fp_view;    /* FP: domain camera 0..3 (F4 cycles), read by
+ static SDL_AtomicInt fp_ceil;    /* FP: ceilings on (F10; off by default) */
+ static SDL_AtomicInt fp_rough;   /* FP: smooth turning off (0 = on, the default) */
+ static SDL_AtomicInt fp_mystery; /* FP: mystery encounters, SET_FPMYSTERY values */
++static SDL_AtomicInt fp_common;  /* FP: a ? holds a rarer set off (0 = on, the default) */
+ /* FP: notes the dungeon code keeps here because its own data is reset after every battle
+  * (the overlay reload): per enemy party its mystery roll, and the floor's chosen party. Game
+  * thread only. */
+@@ -543,6 +544,14 @@ int Host_FpMystery(void) {
+     return SDL_GetAtomicInt(&fp_mystery);
+ }
+ 
++void Host_SetFpMysteryRare(int on) {
++    SDL_SetAtomicInt(&fp_common, on == 0);
++}
++
++int Host_FpMysteryRare(void) {
++    return !SDL_GetAtomicInt(&fp_common);
++}
++
+ int Host_FpGetNote(int i) {
+     return i >= 0 && i < 16 ? fp_notes[i] : 0;
+ }
+@@ -1122,6 +1131,11 @@ void Host_GameEvents(void) {
+             printf("[host] mystery encounters %d (F1)\n", Host_FpMystery());
+             Settings_Set(SET_FPMYSTERY, Host_FpMystery());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPMYSTRARE], 0)) != 0 && v - 1 != Host_FpMysteryRare()) {
++            Host_SetFpMysteryRare(v - 1);
++            printf("[host] mystery rarer sets %s (F1)\n", Host_FpMysteryRare() ? "on" : "off");
++            Settings_Set(SET_FPMYSTRARE, Host_FpMysteryRare());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+diff --git a/host/settings.c b/host/settings.c
+index 652a6e3..4e7880d 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,11 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters",
++    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters", "mystery_rare",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -619,9 +619,9 @@ void Settings_Load(int no_window) {
+     printf("[settings] sharpen %d, title_hint %d, speed %d, update_check %d, smooth %d, select_hold_menu %d\n",
+            Settings_Get(SET_SHARPEN), Settings_Get(SET_TITLE_HINT), Settings_Get(SET_SPEED),
+            Settings_Get(SET_UPDATE_CHECK), Settings_Get(SET_SMOOTH), Settings_Get(SET_SELECT_HOLD));
+-    printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d, mystery_encounters %d\n",
++    printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d, mystery_encounters %d, mystery_rare %d\n",
+            Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL), Settings_Get(SET_FPSMOOTHTURN),
+-           Settings_Get(SET_FPMYSTERY));
++           Settings_Get(SET_FPMYSTERY), Settings_Get(SET_FPMYSTRARE));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index 0c6406c..2806e44 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -30,6 +30,7 @@ enum {
+     SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains (F10), off by default */
+     SET_FPSMOOTHTURN, /* 0 / 1: FP smooth turning in the 3D domain views, on by default */
+     SET_FPMYSTERY,    /* 0..3: FP mystery encounters: off, one per floor, 30 %, all but bosses */
++    SET_FPMYSTRARE,   /* 0 / 1: FP a ? holds one of the floor's rarer enemy sets, on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 4ad05a6..b00ed20 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -206,6 +206,7 @@ void display_tab(void) {
+     bool fpceil = Settings_Get(SET_FPCEIL) != 0;
+     bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
+     int mystery = Settings_Get(SET_FPMYSTERY);
++    bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -262,6 +263,11 @@ void display_tab(void) {
+         }
+     }
+     ImGui::TextDisabled("Wandering Digimon shown as a ? until the battle starts (bosses never).");
++    if (ImGui::Checkbox("A ? holds a rarer Digimon", &rare)) {
++        Host_RequestSetting(SET_FPMYSTRARE, rare);
++    }
++    ImGui::TextDisabled("Swaps a ? for one of the floor's less common enemy groups, from that floor's");
++    ImGui::TextDisabled("own table and levels. Takes effect from the next floor you enter.");
+     if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+         Settings_Set(SET_TITLE_HINT, hint);
+     }
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+index bebb783..1f5c230 100644
+--- a/include/stag4000/fpview.h
++++ b/include/stag4000/fpview.h
+@@ -50,9 +50,10 @@ void Stg40_FpReset(void);
+ /* automap.c: the view's facing as an arrow over the beetle on an automap window (before
+  * Stg40_AutomapDrawWindow with the same x, y, cx, cy, scale; fade 0..0xFF). */
+ void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade);
+-/* Mystery encounters: spawn.c notes each enemy party (boss flag, a roll) and picks the floor's
+- * one; Stg40_FpMystery says whether an entity shows as a ? (the F1 setting); the ? itself. */
+-void Stg40_FpNoteParty(s32 index, s32 boss);
++/* Mystery encounters: spawn.c notes each enemy party (boss flag, its pick, a roll), then the
++ * floor's one is picked and (rarer sets on) each ? party swapped for a rarer set of the
++ * floor; Stg40_FpMystery says whether an entity shows as a ? (the F1 setting); the ? itself. */
++void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick);
+ void Stg40_FpRollMystery(void);
+ s32 Stg40_FpMystery(void *ent);
+ void Stg40_FpDrawMystery(void *loc);
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index ee003aa..2dfd4fe 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -906,21 +906,180 @@ void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
+ /* ---- mystery encounters ------------------------------------------------------------------ */
+ 
+ /* Notes kept in host memory (they survive the overlay reload after a battle): note i for enemy
+- * party i = FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | roll 0..99; note 15 = the floor's
+- * chosen party (FP_NOTE_VALID | index), or 0 for none. */
++ * party i = FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | its pick (1-based index into the
++ * floor's enemySets) << FP_NOTE_PICK_SHIFT | roll 0..99; note 15 = the floor's chosen party
++ * (FP_NOTE_VALID | index), or 0 for none. */
+ #define FP_NOTE_VALID 0x200
+ #define FP_NOTE_BOSS 0x100
++#define FP_NOTE_PICK_SHIFT 10
++#define FP_NOTE_SWAPPED 0x4000
+ #define FP_NOTE_CHOSEN 15
+ 
+-/* Stg40_SpawnEnemyParties, per party: its boss flag and a roll from the mod's own generator. */
+-void Stg40_FpNoteParty(s32 index, s32 boss) {
+-    Host_FpSetNote(index, FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | (s32)(Host_FpRandom() % 100));
++/* Stg40_SpawnEnemyParties, per party: its boss flag, its pick, a roll from the mod's own
++ * generator. */
++void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick) {
++    Host_FpSetNote(index, FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | ((pick & 0xF) << FP_NOTE_PICK_SHIFT) |
++                              (s32)(Host_FpRandom() % 100));
+ }
+ 
+-/* Stg40_SpawnEnemyParties, at the end: clears notes of unused slots and picks the floor's one
+- * mystery party among those that are not bosses. */
++/* Whether party idx shows as a ? under setting `mode` (its notes). */
++static s32 Stg40_FpMysteryIdx(s32 idx, s32 mode) {
++    s32 v;
++
++    if (mode == 0 || idx < 0 || idx >= FP_NOTE_CHOSEN || Dung_StatePtr == NULL || idx >= Dung_StatePtr->partyCount) {
++        return 0;
++    }
++    v = Host_FpGetNote(idx);
++    if (!(v & FP_NOTE_VALID) || (v & FP_NOTE_BOSS)) {
++        return 0;
++    }
++    switch (mode) {
++    case 1:
++        return Host_FpGetNote(FP_NOTE_CHOSEN) == (FP_NOTE_VALID | idx);
++    case 2:
++        return (v & 0xFF) < FP_MYSTERY_PCT;
++    default:
++        return 1;
++    }
++}
++
++/* The enemy set id of a 1-based pick on this floor, 0 when the floor has none there, or it is
++ * not in the set file, or it is a boss fight. */
++static s32 Stg40_FpUsableSet(s32 pick) {
++    Stg40DungFloor *floor = (Stg40DungFloor *)(sptr)Stg40_RootState->floorMap; /* as spawn.c reads it */
++    Out1DB68 out;
++    s32 id;
++
++    if (pick < 1 || pick > 4 || floor == NULL) {
++        return 0;
++    }
++    id = floor->enemySets[pick];
++    if (id == 0 || Cd_GetFileOrNull(0xC6F) == 0 || Enemy_FindSetById(id) == NULL) {
++        return 0;
++    }
++    Enemy_GetSetSummary((void *)(sptr)id, &out);
++    return out.isBossFight ? 0 : id;
++}
++
++/* Party idx (a ? when rarer sets are on) becomes one of the floor's less common sets: every
++ * spawn point of every layout of the floor lists four picks, so a pick listed fewer times
++ * turns up less often. Only sets the floor really uses (listed somewhere) and strictly rarer
++ * than the party's own, weighted toward the rarest (1 / count); none: it stays. The party and
++ * its entity are filled in as Stg40_SpawnEnemyParties fills a new one. */
++static void Stg40_FpSwapRarer(s32 idx) {
++    Stg40DungFloor *floor = (Stg40DungFloor *)(sptr)Stg40_RootState->floorMap; /* as spawn.c reads it */
++    Stg40Drop *r;
++    Stg40EnemyParty *s = (Stg40EnemyParty *)Dung_StatePtr->parties[idx];
++    Stg40Ent48 *e = NULL;
++    Out1DB68 out;
++    s32 note = Host_FpGetNote(idx);
++    s32 cur = (note >> FP_NOTE_PICK_SHIFT) & 0xF;
++    s32 cnt[16];
++    float w[5];
++    float total = 0.0f;
++    float x;
++    s32 id;
++    s32 k;
++    s32 i;
++    s32 m;
++
++    if (floor == NULL) {
++        return;
++    }
++    for (k = 0; k < 16; k++) {
++        cnt[k] = 0;
++    }
++    for (i = 0; i < 8; i++) {
++        Stg40DungLayout *lay;
++
++        if (floor->layouts[i] == 0) {
++            continue;
++        }
++        lay = P32(Stg40DungLayout, floor->layouts[i]);
++        if (lay->enemyParties == 0) {
++            continue;
++        }
++        for (r = P32(Stg40Drop, lay->enemyParties); r->x != 0xFF; r++) {
++            cnt[r->pick0]++;
++            cnt[r->pick1]++;
++            cnt[r->pick2]++;
++            cnt[r->pick3]++;
++        }
++    }
++    if (cur < 1 || cur > 4) {
++        return;
++    }
++    for (k = 1; k <= 4; k++) {
++        w[k] = 0.0f;
++        if (k == cur || cnt[k] == 0 || cnt[k] >= cnt[cur] || Stg40_FpUsableSet(k) == 0 ||
++            Stg40_FpUsableSet(k) == s->setId) {
++            continue;
++        }
++        w[k] = 1.0f / cnt[k];
++        total += w[k];
++    }
++    if (total <= 0.0f) {
++        return;
++    }
++    x = (Host_FpRandom() % 10000) / 10000.0f * total;
++    for (k = 1; k < 4 && x >= w[k]; k++) {
++        x -= w[k];
++    }
++    while (k > 1 && w[k] <= 0.0f) {
++        k--; /* rounding landed past the last weighted pick */
++    }
++    if (w[k] <= 0.0f) {
++        return;
++    }
++    id = Stg40_FpUsableSet(k);
++    for (i = 0; i < Dung_StatePtr->entCount; i++) {
++        if (Dung_StatePtr->ents[i].kind == 1 && Dung_StatePtr->ents[i].params == (u8 *)s) {
++            e = &Dung_StatePtr->ents[i];
++            break;
++        }
++    }
++    if (e == NULL) {
++        return;
++    }
++    Enemy_GetSetSummary((void *)(sptr)id, &out);
++    e->digiId = out.mapDigiId;
++    if (e->digiId >= 500 && e->digiId <= 532) {
++        e->scaleX = e->scaleY = e->scaleZ = 0xD99;
++    } else {
++        e->scaleX = e->scaleY = e->scaleZ = 0x1000;
++    }
++    s->setId = id;
++    s->useDungeonBgm = out.useDungeonBgm != 0;
++    s->likedGift = out.likedGift;
++    s->pointsPerLevel = out.pointsPerLevel != 0 ? out.pointsPerLevel : 1;
++    s->giftsTaken = 0;
++    s->giftPoints = 0;
++    s->stepsPerBurst = Stg40_EnemyPaceTable[out.paceType * 2];
++    s->idleTicks = Stg40_EnemyPaceTable[out.paceType * 2 + 1];
++    s->cellCode = Stg40_EnemyAiTable[out.aiType * 2];
++    m = s->pathMode = Stg40_EnemyAiTable[out.aiType * 2 + 1];
++    if (m == 2 && s->cellCode != (Stg40_GetCellFlags(e->loc.u0.pair.field_0, e->loc.u0.pair.field_2) & 0xF)) {
++        s->cellCode = m;
++        s->pathMode = 0;
++    }
++    s->digiCount = 0;
++    for (i = 0; i < 3; i++) {
++        if ((s16)out.digiIds[i] == 0) {
++            break;
++        }
++        s->digiIds[i] = out.digiIds[i];
++        s->levels[i] = out.levels[i];
++        s->digiCount++;
++    }
++    Host_FpSetNote(idx, (note & ~(0xF << FP_NOTE_PICK_SHIFT)) | (k << FP_NOTE_PICK_SHIFT) | FP_NOTE_SWAPPED);
++}
++
++/* Stg40_SpawnEnemyParties, at the end: clears notes of unused slots, picks the floor's one
++ * mystery party among those that are not bosses, and (rarer sets on) swaps each party that
++ * will show as a ? under the current setting for a rarer set of the floor. */
+ void Stg40_FpRollMystery(void) {
+     s32 n = Dung_StatePtr->partyCount;
++    s32 mode = Host_FpMystery();
+     s32 pick[16];
+     s32 count = 0;
+     s32 i;
+@@ -935,39 +1094,28 @@ void Stg40_FpRollMystery(void) {
+         }
+     }
+     Host_FpSetNote(FP_NOTE_CHOSEN, count != 0 ? FP_NOTE_VALID | pick[Host_FpRandom() % count] : 0);
++    if (mode != 0 && Host_FpMysteryRare()) {
++        for (i = 0; i < n && i < FP_NOTE_CHOSEN; i++) {
++            if (Stg40_FpMysteryIdx(i, mode)) {
++                Stg40_FpSwapRarer(i);
++            }
++        }
++    }
+ }
+ 
+ /* The entity is a wandering enemy party shown as a ? (the F1 setting, its notes). */
+ s32 Stg40_FpMystery(void *ent) {
+     Stg40Ent48 *e = (Stg40Ent48 *)ent;
+-    s32 mode = Host_FpMystery();
+     sptr off;
+-    s32 idx;
+-    s32 v;
+ 
+-    if (mode == 0 || e == NULL || e->kind != 1 || e->params == NULL || Dung_StatePtr == NULL) {
++    if (Host_FpMystery() == 0 || e == NULL || e->kind != 1 || e->params == NULL || Dung_StatePtr == NULL) {
+         return 0;
+     }
+     off = (sptr)e->params - (sptr)Dung_StatePtr->parties[0];
+     if (off < 0 || off % (sptr)sizeof(Dung_StatePtr->parties[0]) != 0) {
+         return 0;
+     }
+-    idx = (s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0]));
+-    if (idx >= Dung_StatePtr->partyCount || idx >= FP_NOTE_CHOSEN) {
+-        return 0;
+-    }
+-    v = Host_FpGetNote(idx);
+-    if (!(v & FP_NOTE_VALID) || (v & FP_NOTE_BOSS)) {
+-        return 0;
+-    }
+-    switch (mode) {
+-    case 1:
+-        return Host_FpGetNote(FP_NOTE_CHOSEN) == (FP_NOTE_VALID | idx);
+-    case 2:
+-        return (v & 0xFF) < FP_MYSTERY_PCT;
+-    default:
+-        return 1;
+-    }
++    return Stg40_FpMysteryIdx((s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0])), Host_FpMystery());
+ }
+ 
+ /* POLY_G3 (gouraud flat triangle), 0x1C bytes, 6 words after the tag. */
+diff --git a/src/stag4000/spawn.c b/src/stag4000/spawn.c
+index 9962ec7..66ee83d 100644
+--- a/src/stag4000/spawn.c
++++ b/src/stag4000/spawn.c
+@@ -145,8 +145,8 @@ void Stg40_SpawnEnemyParties(void) {
+             s = (Stg40EnemyParty *)Dung_StatePtr->parties[Dung_StatePtr->partyCount - 1];
+             s->setId = id;
+ #ifdef DW2_NATIVE
+-            /* FP: mystery encounters, this party's boss flag and roll */
+-            Stg40_FpNoteParty(Dung_StatePtr->partyCount - 1, out.isBossFight != 0);
++            /* FP: mystery encounters, this party's boss flag, pick and roll */
++            Stg40_FpNoteParty(Dung_StatePtr->partyCount - 1, out.isBossFight != 0, k);
+ #endif
+             s->useDungeonBgm = out.useDungeonBgm != 0;
+             s->likedGift = out.likedGift;
+-- 
+2.43.0
+

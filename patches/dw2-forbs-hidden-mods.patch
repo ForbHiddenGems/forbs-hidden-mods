@@ -1,0 +1,4493 @@
+diff --git a/README.md b/README.md
+index f4b8c53..ae478d2 100644
+--- a/README.md
++++ b/README.md
+@@ -166,6 +166,8 @@ Default bindings (change them in the F1 settings window):
+ |---|---|
+ | F1 | Settings window (Esc closes it). Holding Select (Backspace, or Back / Select on a gamepad) for 1 second opens it too; Start or Select on a gamepad closes it |
+ | F3 | Speed-up on / off ("Speed unlocked" / "Speed locked") |
++| F4 | Domain camera: classic, high chase, low chase, first person ([doc/FPVIEW.md](doc/FPVIEW.md)) |
++| F10 | First-person ceilings on / off |
+ | F5 | Render scale 1x .. 8x |
+ | F6 | No wobble on / off |
+ | F7 | 16:9 on / off |
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+new file mode 100644
+index 0000000..64e4031
+--- /dev/null
++++ b/doc/FPVIEW.md
+@@ -0,0 +1,142 @@
++# 3D domain views (FP)
++
++A native-only mod for the PC port: extra cameras for the domains, with the camera moving
++smoothly between them. **F4** cycles the views, also in **F1 > Forbs Hidden Mods > Domain camera**:
++
++1. **Classic**: the original overhead view, drawn by the game's own renderer.
++2. **High chase**: raised behind the Digi-Beetle, looking down, turning with it.
++3. **Low chase**: just behind and above the beetle, third person.
++4. **First person**: the camera in the beetle.
++
++Each press swoops the camera to the next view in under a second (height, distance, tilt,
++field of view and rotation blend together; the overhead view's squashed tile rows unsquash
++on the way). The choice is saved as `domain_view` in `settings.ini` (0..3); `--fpview`
++starts in first person. **F10** turns ceilings on and off. **Smooth turning** (F1 > Forbs Hidden Mods,
++on by default, `smooth_turns`) eases the camera and the beetle round when it turns.
++**Mystery encounters** (F1 > Forbs Hidden Mods, `mystery_encounters`) show wandering Digimon as a
++floating ? until the battle starts: 1 per floor, 30% of encounters, all except bosses, or off
++(the default). It works in every view, Classic too. **A ? holds a rarer Digimon** (F1, on by
++default, `mystery_rare`) swaps each ? for one of its floor's less common enemy groups.
++**LvlLimitBoostr**: a rare one-use find that raises a party Digimon's level limit by 1 (see
++below), in 1% of all chests and 1% of won ? encounters (F1 checkboxes, on by default).
++
++## Controls in the 3D views
++
++Classic keeps the original controls. The other views use these; the controls switch when
++a transition ends, never half way.
++
++| Pad | Does |
++| --- | --- |
++| Up | Step forward |
++| Left / Right | Turn 90 degrees on the spot |
++| Down | Turn around |
++| Up + Left / Right | Step diagonally forward (the view keeps facing ahead) |
++| Cross, Square, Select ... | As before; Cross acts on the tile you face |
++
++The beetle turns back to the view after a diagonal step, so Cross always acts on what is in
++front of you.
++
++## How it works
++
++Everything is presentation. Turns, RNG, the retail draw window and the game's own state run as
++before, and the PS1 matching build is untouched: every change is inside `#ifdef DW2_NATIVE`
++(the retail-preprocessed sources of the five touched stag4000 files are identical).
++
++- **Camera** (`Stg40_FpCameraTick`, called by `Stg40_CameraUpdate` after the retail
++  `GsSetRefView2`): the retail camera always runs (its scripts too; the game waits on
++  `Stg40_CamIsMoving`) and is read back from `GsWSMATRIX` as the classic pose. A pose is a
++  pivot over the beetle, a distance back from it, yaw, pitch, projection, tile-row depth and
++  fog (`Stg40FpPose`); a transition blends the pose it started from into the live target
++  pose, eased. Classic settled: the retail renderer and camera, untouched.
++- **Smooth turning**: the camera yaw and the beetle's drawn rotation (`Stg40_FpDrawHeading`)
++  ease toward the game's heading, 20% of the way left each frame (`FP_TURN_EASE`). The game's
++  own heading, turn timing and move logic are untouched. Off: the original snap (the camera
++  at the game's 0x100 a frame).
++- **Battle exits and floor changes**: `Stg40_FpReset` (each floor set-up) drops any transition;
++  the camera snaps to the chosen view at its next use. The overlay reload after a battle
++  resets this state too.
++- **Floor** (`Stg40_FpDrawFloor`, replacing the retail 9x9 window): every cell out to
++  `STG40_FP_RADIUS` tiles, nearest first. Each tile top and wall is clipped in world space
++  against the near plane and a guard band around the screen, then projected by the GTE vertex
++  by vertex (so the PGXP hook records them and the HD renderer draws them perspective-correct),
++  and sent as `POLY_GT3` fans, faded to black with distance. The packets go into the mod's own
++  double-buffered area, a static array inside the 16 MB window the 24-bit OT links reach, so
++  the floor never takes room from the game's models. Without precise geometry (no wobble and
++  smooth frames both off) floors are cut 2 x 2 and walls 2 x 1 against affine texture warp.
++- **Ceilings** on walled floors (walls going up): each floor tile gets a ceiling at the wall
++  tops with its own floor texture, a little darker (`FP_CEILING_SHADE`). Off by default;
++  **F10** or F1 > Forbs Hidden Mods > Ceilings in first person turns them on (`fp_ceilings` in
++  `settings.ini`).
++  Platform floors have no walls above them, so they stay open to the black background.
++- **Walls** keep the retail templates and the retail cull rule (`Stg40_DrawTileWalls`), so
++  walled floors show walls from inside, and platform floors (cliffs going down) show the
++  cliffs that face you.
++- **Square tiles**: retail rows are 0x800 deep and columns 0xA00 wide (made for the angled
++  overhead camera). In first person both are 0xA00, and entity positions go through
++  `Stg40_FpWorldX / Z` to match. The FP world is centred on the beetle.
++- **Minimap pointer**: in the views that turn with the beetle, its own marker square on both automap views
++  gets a small white triangle on the side the view faces, turning with it
++  (`Stg40_FpDrawMapArrow`).
++- **Entities** beyond the retail 5-tile window are drawn through the 16:9 side models
++  (out to the radius). Models behind the eye are dropped by the GTE error flags per bone.
++- **The beetle** and the models linked to it are not drawn while the eye is within a tile of
++  it (first person, and a camera moving in); their anims still run.
++- **Solid cells** get black tops at wall height when the eye is above the walls, as the retail
++  floor draws them, so rock hides what lies behind it from the chase views.
++
++## Mystery encounters
++
++- **Rolls** (`Stg40_FpNoteParty`, `Stg40_FpRollMystery`, from `Stg40_SpawnEnemyParties` when a
++  floor is built): each enemy party gets its boss flag (`Enemy_GetSetSummary`) and a roll
++  0..99, and the floor gets one chosen non-boss party. The numbers come from the mod's own
++  generator (`Host_FpRandom`), never the game's, so battles, drops and encounters are the
++  game's. They are kept in host memory (`Host_FpGetNote`), since the dungeon overlay's data is
++  reset after every battle: a ? stays a ? until you fight it.
++- **Which show as ?** (`Stg40_FpMystery`, the setting read live): 1 the chosen party, 2 a roll
++  under 30, 3 every party; bosses never.
++- **Drawing**: the model is not drawn but its anim and texture anim run (the safe path the
++  beetle uses); its shadow stays and a yellow ? floats over it, bobbing, facing the camera
++  (`Stg40_FpDrawMystery`), in both the retail draw window and the far side models.
++- **Enemy info** (Square) leaves mystery parties off its list.
++- **Rarer Digimon** (`Stg40_FpSwapRarer`, when the floor is built, under the settings of that
++  moment): a floor has up to four enemy sets (`enemySets`), and every spawn point of every
++  layout of the floor lists four picks among them, so a set listed fewer times turns up less
++  often. A party that will show as a ? becomes a set the floor uses that is strictly rarer
++  than its own, weighted 1 / count toward the rarest; already the rarest, it stays. Never a
++  boss set. The party (Digimon, levels, AI, pace, gift) and its map model are filled in as
++  `Stg40_SpawnEnemyParties` fills a new one, so the floor's own table and levels hold.
++
++## LvlLimitBoostr
++
++- **What it does**: +1 to a party Digimon's level limit (`maxLevel`). Only for a Digimon at
++  its limit whose limit is below 99; a limit of 99 can't be raised.
++- **Where it comes from** (`FP_BOOST_PCT`, 1 %; F1 > Forbs Hidden Mods > LvlLimitBoostr, both on by
++  default):
++  - **1% of all chests** (`boost_chests`): every chest in the domains is rolled the first
++    time it is opened (`Stg40_FpChestHasBoost`), mystery encounters or not. None leaves it in
++    the chest, which stays closed (as with a full bag), to come back to; a chest is never
++    rolled twice (per-floor masks in host notes 11 and 14).
++  - **1% of all ? encounters** (`boost_battles`): a won ? battle offers it right after the
++    battle (`Stg40_FpNoteBattle` at the encounter, the battle stage's win path notes the win,
++    `Stg40_FpBattleBoostDue` back in the dungeon). None loses it.
++- **The prompt** (`Stg40_FpBoostPrompt`): a message box with the title, the selected party
++  Digimon (name, level / limit) or None, and a hint; Up / Down (or Left / Right) choose,
++  (X) confirms, (O) is None. A Digimon that can't take it says why. The text is the game's own
++  glyph encoding (`Stg40_FpGlyphs`, the table of `host/devedit.c`).
++- **Never in the bag**: used at once or left, so a save stays readable by the official port.
++
++## Tuning
++
++`src/stag4000/fpview_math.inc`: `FP_HIGH_*` and `FP_LOW_*` (chase cameras: pivot height,
++distance, pitch, projection), `FP_BLEND_FRAMES` (transition length), `FP_EYE` (eye height),
++`FP_H` (projection, about 80 degrees),
++`FP_PITCH` (look down), `FP_FOG_START / END`, `STG40_FP_RADIUS` (in `fpview.h`),
++`FP_TURN_STEP` (turn speed), `FP_MAP_ARROW` (minimap pointer size), `FP_MYSTERY_PCT`,
++`FP_MYSTERY_PIX` and `FP_MYSTERY_HEIGHT` (the 30 % setting, the ?'s size and height).
++
++## Known limits
++
++- Camera scripts (floor intro, scrolls to a target when shooting a Gift or reading enemy info)
++  are not shown; the view stays in the beetle.
++- Entities far from the beetle need their files in the CD cache, as the 16:9 side columns do.
++- Smooth frames do not blend the dungeon while in first person (30 fps there).
+diff --git a/host/devdata.c b/host/devdata.c
+index f972436..d60c201 100644
+--- a/host/devdata.c
++++ b/host/devdata.c
+@@ -226,6 +226,22 @@ void DevData_InitConst(void) {
+ }
+ 
+ static int read_file(int id, File *f) {
++    int mod_size;
++    const void *mod = Host_ModFile(id, &mod_size);
++
++    if (mod != NULL) {
++        /* a replacement in mods/ (host/mods.c): what the game itself reads, so new Digimon
++         * and items show in the overlay too */
++        f->data = (uint8_t *)malloc((size_t)mod_size);
++        f->size = mod_size;
++        if (f->data != NULL && mod_size >= 16) {
++            memcpy(f->data, mod, (size_t)mod_size);
++            return 1;
++        }
++        free(f->data);
++        f->data = NULL;
++        return 0;
++    }
+     f->data = (uint8_t *)Host_PakReadFile(id, &f->size);
+     if (f->data == NULL || f->size < 16) {
+         printf("[devdata] file 0x%03X: cannot read from the pack\n", id);
+diff --git a/host/host.h b/host/host.h
+index 20de1e5..889e12b 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -85,6 +85,41 @@ void Host_SmoothScene(void);
+  * values (n <= 16) and whether it is a shot set at once (hard: a change is a cut) or a camera that
+  * moves smoothly (backend/pgxp.h Pgxp_Camera). */
+ void Host_SmoothCamera(const int *v, int n, int hard);
++/* FP: the domain camera, 0 classic, 1 high chase, 2 low chase, 3 first person (F4 cycles,
++ * settings "domain_view"); the game C reads it each frame (src/stag4000/fpview_native.inc). */
++void Host_SetFpView(int view);
++int Host_FpView(void);
++const char *Host_FpViewName(int view);
++/* FP: ceilings over walled domains (F10 or F1, settings "fp_ceilings", off by default). */
++void Host_SetFpCeiling(int on);
++int Host_FpCeiling(void);
++/* FP: smooth turning in the 3D domain views (F1, settings "smooth_turns", on by default). */
++void Host_SetFpSmoothTurn(int on);
++int Host_FpSmoothTurn(void);
++/* FP: mystery encounters (F1, settings "mystery_encounters"): 0 off, 1 one per floor, 2 30 %
++ * of encounters, 3 all but bosses. Notes 0..15 survive the dungeon overlay's reload after a
++ * battle; Host_FpRandom is the mod's own generator (never the game's). */
++void Host_SetFpMystery(int mode);
++int Host_FpMystery(void);
++/* FP: a ? holds one of the floor's rarer enemy sets (settings "mystery_rare", on by default;
++ * applied when a floor is built). */
++void Host_SetFpMysteryRare(int on);
++int Host_FpMysteryRare(void);
++/* FP: LvlLimitBoostr routes, on by default: 1 % of all chests ("boost_chests"), 1 % of won ?
++ * encounters ("boost_battles"). */
++void Host_SetFpBoostChests(int on);
++int Host_FpBoostChests(void);
++void Host_SetFpBoostBattles(int on);
++int Host_FpBoostBattles(void);
++/* FP: battle digivolution, energy bar and Digivolve command (settings "battle_digivolve", on by
++ * default; src/stag3000/evo_native.inc). */
++void Host_SetFpBattleEvo(int on);
++int Host_FpBattleEvo(void);
++int Host_FpGetNote(int i);
++void Host_FpSetNote(int i, int v);
++unsigned int Host_FpRandom(void);
++/* The HD renderer draws precise, perspective-correct polygons now (no wobble or smooth frames). */
++int Host_PreciseGeometry(void);
+ /* PG.3, for the game C (DW2_NATIVE): extra screen pixels on each side of a picture `width` wide
+  * in 16:9 (0 in 4:3), so culls can let objects into the sides; and a mark that the frame being
+  * built is a 2D picture that keeps black sides (pillarbox). */
+@@ -117,6 +152,11 @@ unsigned short Host_PadParseButtons(const char *names);
+  * with disc sector `lba` after its 4-byte header: subheader (8) + 2328 bytes (Form 1: the 2048
+  * data bytes, then zeros) and returns the file id, or -1 (no file there; body is zero). */
+ void Host_PakOpen(const char *path, const char *disc, int no_window);
++/* host/mods.c: replacement game files from mods/<hex id>.bin next to the exe or in the user data
++ * folder (model mods); Host_ModFile is NULL for a file that is not replaced. */
++void Host_ModsInit(void);
++const void *Host_ModFile(int id, int *size);
++int Host_ModsCount(void);
+ int Host_PakSector(int lba, unsigned char *body);
+ /* The file holding sector `lba` and its size in sectors, or -1 (and 0 sectors). */
+ int Host_PakFileAt(int lba, int *sectors);
+diff --git a/host/main.c b/host/main.c
+index 335595d..91e003f 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -31,7 +31,7 @@
+  *
+  *   dw2 [IMAGE] [--disc IMAGE] [--pak PATH] [--vblanks N] [--no-window] [--shot-dir DIR] [--shot-at N]... [--shot-vb N]...
+  *       [--hold-boot N] [--press N:BUTTONS[:LEN]]... [--press2 N:BUTTONS[:LEN]]... [--save-dir DIR]
+- *       [--fast] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--renderer gpu|soft]
++ *       [--fast] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--fpview] [--renderer gpu|soft]
+  *       [--settings PATH] [--settings-set KEY=VALUE]... [--settings-ui] [--settings-tab T] [--ui-shots] [--quit-dialog]
+  *       [--no-update-check] [--update-check] [--version]
+  *       [--movies] [--window-mode M] [--fullscreen] [--windowed]
+@@ -381,6 +381,7 @@ static void run_threaded(void) {
+ HOST_ENTRY int main(int argc, char **argv) {
+     int i;
+     int cl_scale = 0, cl_wide = 0, cl_pgxp = 0, cl_renderer = 0, cl_window = -1, cl_sharpen = -1, cl_smooth = 0;
++    int cl_fpview = 0;
+     int update_force = 0;
+ 
+ #ifdef _WIN32
+@@ -458,6 +459,8 @@ HOST_ENTRY int main(int argc, char **argv) {
+             cl_pgxp = 1;
+         } else if (strcmp(argv[i], "--smooth") == 0) {
+             cl_smooth = 1;
++        } else if (strcmp(argv[i], "--fpview") == 0) {
++            cl_fpview = 1;
+         } else if (strcmp(argv[i], "--wide") == 0) {
+             Host_SetWide(1);
+             cl_wide = 1;
+@@ -484,7 +487,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+             fprintf(stderr,
+                     "usage: %s [IMAGE] [--disc IMAGE] [--pak PATH] [--vblanks N] [--no-window] [--shot-dir DIR] [--shot-at N]... "
+                     "[--shot-vb N]... [--hold-boot N] [--press N:BUTTONS[:LEN]]... [--press2 N:BUTTONS[:LEN]]... "
+-                    "[--save-dir DIR] [--fast] [--speed-up] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] "
++                    "[--save-dir DIR] [--fast] [--speed-up] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--fpview] "
+                     "[--renderer gpu|soft] [--settings PATH] [--settings-set KEY=VALUE]... [--settings-ui] [--settings-tab T] [--ui-shots] [--quit-dialog] [--no-update-check] [--update-check] [--update-as V] [--update-auto] [--version] "
+                     "[--movies] [--window-mode windowed|borderless|exclusive] [--fullscreen] [--windowed]%s\n",
+                     argv[0], DW2_DEV ? " [--start-mode N] [--devui] [--devui-tab T] [--window-size W H] [--devedit N:KIND=ARGS]..." : "");
+@@ -514,6 +517,9 @@ HOST_ENTRY int main(int argc, char **argv) {
+     if (cl_smooth) {
+         Settings_Override(SET_SMOOTH, 1);
+     }
++    if (cl_fpview) {
++        Settings_Override(SET_FPVIEW, 3); /* first person */
++    }
+     Settings_Load(no_window);
+     if (!cl_scale) {
+         PsxHd_SetScale(Settings_Get(SET_SCALE));
+@@ -528,6 +534,14 @@ HOST_ENTRY int main(int argc, char **argv) {
+     if (Settings_Get(SET_SMOOTH)) {
+         Host_SetSmooth(1); /* PR.34, also with --smooth */
+     }
++    Host_SetFpView(Settings_Get(SET_FPVIEW)); /* FP domain camera, --fpview = first person */
++    Host_SetFpCeiling(Settings_Get(SET_FPCEIL));
++    Host_SetFpSmoothTurn(Settings_Get(SET_FPSMOOTHTURN));
++    Host_SetFpMystery(Settings_Get(SET_FPMYSTERY));
++    Host_SetFpMysteryRare(Settings_Get(SET_FPMYSTRARE));
++    Host_SetFpBoostChests(Settings_Get(SET_FPBOOSTCHEST));
++    Host_SetFpBoostBattles(Settings_Get(SET_FPBOOSTBATTLE));
++    Host_SetFpBattleEvo(Settings_Get(SET_FPBATTLEEVO));
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+@@ -540,6 +554,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     /* Main thread, before the game thread and window: the pack build may show its own progress
+      * window and a file dialog. */
+     Host_PakOpen(pak, disc, no_window);
++    Host_ModsInit();
+ #if DW2_DEV
+     DevEdit_Init();
+ #endif
+diff --git a/host/mods.c b/host/mods.c
+new file mode 100644
+index 0000000..301d4ae
+--- /dev/null
++++ b/host/mods.c
+@@ -0,0 +1,169 @@
++/* Model mods (native only): replacement game files in a mods/ folder.
++ *
++ * A file named <hex file id>.bin (e.g. 0A12.bin, as the dw2model Blender add-on exports it) in
++ * the folder named by mods-folder.txt next to the exe, in mods/ next to the exe, or in mods/ in
++ * the user data folder (the first one found wins), is served to the game instead of
++ * that file from dw2.pak. The pack itself is never changed and is still checked in full; with
++ * no mods folder (or an empty one) nothing changes. The game reads every model, animation and
++ * texture file through Cd_ReadFileAsync (src/main/cdread.c), which asks Host_ModFile first. */
++#include <SDL3/SDL.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "host.h"
++
++/* 0x001..0xE5A replace the disc's files; 0xE5B..0x7FFF are new files (a new Digimon's model and
++ * animations: the add-on numbers them 0x1000 + number * 16 + k) */
++#define MOD_IDS 0x8000
++
++static void *mod_data[MOD_IDS];
++static int mod_size[MOD_IDS];
++static int mod_count;
++static unsigned char mod_dir[MOD_IDS]; /* which folder it came from (1, 2, ...), for duplicates */
++static char *mod_name[MOD_IDS];
++static int dir_index;
++
++static int hexval(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++/* "0A12.bin" -> 0xA12 ("1AA0.bin" for new files), else -1. A label may follow the number after a
++ * space, "_" or "-": "005C Agumon model.bin" is file 005C too (only the first 4 characters count). */
++static int mod_id(const char *name) {
++    size_t n = strlen(name);
++    int id = 0;
++    int i;
++
++    if (n < 8 || SDL_strcasecmp(name + n - 4, ".bin") != 0) {
++        return -1;
++    }
++    if (n > 8 && name[4] != ' ' && name[4] != '_' && name[4] != '-') {
++        return -1;
++    }
++    for (i = 0; i < 4; i++) {
++        int v = hexval(name[i]);
++        if (v < 0) {
++            return -1;
++        }
++        id = id * 16 + v;
++    }
++    return id > 0 && id < MOD_IDS ? id : -1;
++}
++
++static SDL_EnumerationResult SDLCALL scan_one(void *dir, const char *dirname, const char *name) {
++    char *path = NULL;
++    size_t size = 0;
++    void *data;
++    int id = mod_id(name);
++
++    (void)dir;
++    if (id >= 0 && mod_data[id] != NULL && mod_dir[id] == dir_index) {
++        printf("[mods] skipped %s%s: file %04X is already %s in this folder\n", dirname, name, id, mod_name[id]);
++    }
++    if (id < 0 || mod_data[id] != NULL) {
++        return SDL_ENUM_CONTINUE; /* not a mod file, or already taken from a folder read earlier */
++    }
++    SDL_asprintf(&path, "%s%s", dirname, name);
++    data = path ? SDL_LoadFile(path, &size) : NULL;
++    if (data == NULL || size == 0 || size > 0x80000) {
++        printf("[mods] skipped %s (%s)\n", path ? path : name, data ? "bigger than 512 KB" : SDL_GetError());
++        SDL_free(data);
++    } else {
++        mod_data[id] = data;
++        mod_size[id] = (int)size;
++        mod_dir[id] = dir_index;
++        mod_name[id] = SDL_strdup(name);
++        mod_count++;
++        printf("[mods] file %04X <- %s (%d bytes)\n", id, path, (int)size);
++    }
++    SDL_free(path);
++    return SDL_ENUM_CONTINUE;
++}
++
++static void scan(const char *base) {
++    char *dir = NULL;
++    SDL_PathInfo info;
++
++    if (base == NULL) {
++        return;
++    }
++    SDL_asprintf(&dir, "%smods", base);
++    if (dir != NULL && SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
++        dir_index++;
++        SDL_EnumerateDirectory(dir, scan_one, NULL);
++    }
++    SDL_free(dir);
++}
++
++/* mods-folder.txt next to the exe: one line naming the mods folder to read first (absolute, or
++ * relative to the exe). Forbs Hidden Mods' forbs.py writes it so every build reads the one mods
++ * folder in the forbs-hidden-mods folder. */
++static void scan_listed(const char *base) {
++    char *txt = NULL;
++    char *line;
++    char *dir = NULL;
++    size_t size = 0;
++    size_t n;
++    int absolute;
++
++    if (base == NULL) {
++        return;
++    }
++    SDL_asprintf(&txt, "%smods-folder.txt", base);
++    line = txt ? (char *)SDL_LoadFile(txt, &size) : NULL;
++    SDL_free(txt);
++    if (line == NULL) {
++        return;
++    }
++    n = strcspn(line, "\r\n");
++    line[n] = '\0';
++    while (n > 0 && (line[n - 1] == '/' || line[n - 1] == '\\' || line[n - 1] == ' ')) {
++        line[--n] = '\0';
++    }
++    if (n > 0) {
++        absolute = line[0] == '/' || line[0] == '\\' || (n > 1 && line[1] == ':');
++        SDL_asprintf(&dir, "%s%s/", absolute ? "" : base, line);
++        if (dir != NULL) {
++            SDL_PathInfo info;
++            if (SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
++                printf("[mods] reading %s (from mods-folder.txt)\n", dir);
++                dir_index++;
++                SDL_EnumerateDirectory(dir, scan_one, NULL);
++            } else {
++                printf("[mods] mods-folder.txt names %s, which is not a folder\n", dir);
++            }
++        }
++        SDL_free(dir);
++    }
++    SDL_free(line);
++}
++
++void Host_ModsInit(void) {
++    char *pref = SDL_GetPrefPath("", "DW2-Online");
++
++    scan_listed(SDL_GetBasePath());
++    scan(SDL_GetBasePath());
++    scan(pref);
++    SDL_free(pref);
++    if (mod_count) {
++        printf("[mods] %d replacement file(s) in use\n", mod_count);
++        fflush(stdout);
++    }
++}
++
++const void *Host_ModFile(int id, int *size) {
++    if (id <= 0 || id >= MOD_IDS || mod_data[id] == NULL) {
++        return NULL;
++    }
++    if (size) {
++        *size = mod_size[id];
++    }
++    return mod_data[id];
++}
++
++int Host_ModsCount(void) {
++    return mod_count;
++}
+diff --git a/host/sdl.c b/host/sdl.c
+index 6e936ad..6de2937 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -64,7 +64,7 @@
+ #define SLOTS 3
+ 
+ enum { REQ_SCALE = 1, REQ_WIDE = 2, REQ_PGXP = 4, REQ_SHOT = 8, REQ_QUIT = 16, REQ_SETTING = 32, REQ_SHARPEN = 64,
+-       REQ_SPEED = 128, REQ_SMOOTH = 256 };
++       REQ_SPEED = 128, REQ_SMOOTH = 256, REQ_FPVIEW = 512, REQ_FPCEIL = 1024 };
+ 
+ typedef struct {
+     int kind;      /* 0 black, 1 1x picture, 2 software HD picture, 3 GPU texture */
+@@ -109,6 +109,19 @@ static SDL_AtomicInt on_title; /* PR.10: the game thread saw the title scene at
+ static int last_sharpen = 50;  /* F8 turns sharpening back on at this strength */
+ static const char *volatile quit_why = "window closed";
+ static SDL_AtomicInt smooth_on;  /* PR.34: smooth frames active (game side sets it) */
++static SDL_AtomicInt fp_view;    /* FP: domain camera 0..3 (F4 cycles), read by the game C */
++static SDL_AtomicInt fp_ceil;    /* FP: ceilings on (F10; off by default) */
++static SDL_AtomicInt fp_rough;   /* FP: smooth turning off (0 = on, the default) */
++static SDL_AtomicInt fp_mystery; /* FP: mystery encounters, SET_FPMYSTERY values */
++static SDL_AtomicInt fp_common;  /* FP: a ? holds a rarer set off (0 = on, the default) */
++static SDL_AtomicInt fp_noboostchest;  /* FP: 1 % of chests hold a LvlLimitBoostr off (0 = on) */
++static SDL_AtomicInt fp_noboostbattle; /* FP: 1 % of won ? encounters off (0 = on) */
++static SDL_AtomicInt fp_nobattleevo;   /* FP: battle digivolution off (0 = on) */
++/* FP: notes the dungeon code keeps here because its own data is reset after every battle
++ * (the overlay reload): per enemy party its mystery roll, and the floor's chosen party. Game
++ * thread only. */
++static int fp_notes[16];
++static unsigned int fp_rng;
+ static int shown_vsync;          /* main thread: the renderer's vsync */
+ static int vsync_ok = 1;         /* main thread: vsync could be turned on */
+ static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
+@@ -496,6 +509,106 @@ void Host_SmoothLayer(int id, const void *start, const void *end, int x, int y)
+     PsxHd_SmoothLayer(id, (uintptr_t)start, (uintptr_t)end, x, y);
+ }
+ 
++/* Game side: the HD renderer draws precise, perspective-correct polygons (no wobble, or smooth
++ * frames, which draw no wobble too: backend/psxgpu.c). */
++int Host_PreciseGeometry(void) {
++    return PsxHd_Pgxp() || PsxHd_SmoothActive();
++}
++
++/* FP, game side (or before the game runs). */
++void Host_SetFpView(int view) {
++    SDL_SetAtomicInt(&fp_view, view < 0 || view > 3 ? 0 : view);
++}
++
++/* FP: the names F4 and F1 show for the domain views. */
++const char *Host_FpViewName(int view) {
++    static const char *const names[4] = { "Classic", "High chase", "Low chase", "First person" };
++
++    return names[view < 0 || view > 3 ? 0 : view];
++}
++
++int Host_FpView(void) {
++    return SDL_GetAtomicInt(&fp_view);
++}
++
++void Host_SetFpCeiling(int on) {
++    SDL_SetAtomicInt(&fp_ceil, on != 0);
++}
++
++int Host_FpCeiling(void) {
++    return SDL_GetAtomicInt(&fp_ceil);
++}
++
++void Host_SetFpMystery(int mode) {
++    SDL_SetAtomicInt(&fp_mystery, mode < 0 || mode > 3 ? 0 : mode);
++}
++
++int Host_FpMystery(void) {
++    return SDL_GetAtomicInt(&fp_mystery);
++}
++
++void Host_SetFpMysteryRare(int on) {
++    SDL_SetAtomicInt(&fp_common, on == 0);
++}
++
++int Host_FpMysteryRare(void) {
++    return !SDL_GetAtomicInt(&fp_common);
++}
++
++void Host_SetFpBoostChests(int on) {
++    SDL_SetAtomicInt(&fp_noboostchest, on == 0);
++}
++
++int Host_FpBoostChests(void) {
++    return !SDL_GetAtomicInt(&fp_noboostchest);
++}
++
++void Host_SetFpBoostBattles(int on) {
++    SDL_SetAtomicInt(&fp_noboostbattle, on == 0);
++}
++
++int Host_FpBoostBattles(void) {
++    return !SDL_GetAtomicInt(&fp_noboostbattle);
++}
++
++void Host_SetFpBattleEvo(int on) {
++    SDL_SetAtomicInt(&fp_nobattleevo, on == 0);
++}
++
++int Host_FpBattleEvo(void) {
++    return !SDL_GetAtomicInt(&fp_nobattleevo);
++}
++
++int Host_FpGetNote(int i) {
++    return i >= 0 && i < 16 ? fp_notes[i] : 0;
++}
++
++void Host_FpSetNote(int i, int v) {
++    if (i >= 0 && i < 16) {
++        fp_notes[i] = v;
++    }
++}
++
++/* FP: random numbers of the mod's own (xorshift, seeded from the clock), so the mod never
++ * draws from the game's generator: battles, drops and encounters stay the game's. */
++unsigned int Host_FpRandom(void) {
++    if (fp_rng == 0) {
++        fp_rng = (unsigned int)SDL_GetTicksNS() | 1u;
++    }
++    fp_rng ^= fp_rng << 13;
++    fp_rng ^= fp_rng >> 17;
++    fp_rng ^= fp_rng << 5;
++    return fp_rng;
++}
++
++void Host_SetFpSmoothTurn(int on) {
++    SDL_SetAtomicInt(&fp_rough, on == 0);
++}
++
++int Host_FpSmoothTurn(void) {
++    return !SDL_GetAtomicInt(&fp_rough);
++}
++
+ void Host_SmoothLattice(int px, int py, int pz) {
+     Pgxp_Lattice(px, py, pz);
+ }
+@@ -933,6 +1046,12 @@ void Host_PumpEvents(void) {
+                 if (e.key.scancode == SDL_SCANCODE_F9) {
+                     request(REQ_SMOOTH);
+                 }
++                if (e.key.scancode == SDL_SCANCODE_F4) {
++                    request(REQ_FPVIEW);
++                }
++                if (e.key.scancode == SDL_SCANCODE_F10) {
++                    request(REQ_FPCEIL);
++                }
+                 if (e.key.scancode == SDL_SCANCODE_F3) {
+                     request(REQ_SPEED);
+                 }
+@@ -1019,6 +1138,46 @@ void Host_GameEvents(void) {
+                    PsxHd_Smooth() && !PsxHd_Gpu() ? ": needs the GPU renderer" : "");
+             Settings_Set(SET_SMOOTH, PsxHd_Smooth());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPVIEW], 0)) != 0 && v - 1 != Host_FpView()) {
++            Host_SetFpView(v - 1);
++            printf("[host] domain camera: %s (F1)\n", Host_FpViewName(Host_FpView()));
++            Settings_Set(SET_FPVIEW, Host_FpView());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPCEIL], 0)) != 0 && v - 1 != Host_FpCeiling()) {
++            Host_SetFpCeiling(v - 1);
++            printf("[host] first-person ceilings %s (F1)\n", Host_FpCeiling() ? "on" : "off");
++            Settings_Set(SET_FPCEIL, Host_FpCeiling());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPSMOOTHTURN], 0)) != 0 && v - 1 != Host_FpSmoothTurn()) {
++            Host_SetFpSmoothTurn(v - 1);
++            printf("[host] smooth turning %s (F1)\n", Host_FpSmoothTurn() ? "on" : "off");
++            Settings_Set(SET_FPSMOOTHTURN, Host_FpSmoothTurn());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPMYSTERY], 0)) != 0 && v - 1 != Host_FpMystery()) {
++            Host_SetFpMystery(v - 1);
++            printf("[host] mystery encounters %d (F1)\n", Host_FpMystery());
++            Settings_Set(SET_FPMYSTERY, Host_FpMystery());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPMYSTRARE], 0)) != 0 && v - 1 != Host_FpMysteryRare()) {
++            Host_SetFpMysteryRare(v - 1);
++            printf("[host] mystery rarer sets %s (F1)\n", Host_FpMysteryRare() ? "on" : "off");
++            Settings_Set(SET_FPMYSTRARE, Host_FpMysteryRare());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBOOSTCHEST], 0)) != 0 && v - 1 != Host_FpBoostChests()) {
++            Host_SetFpBoostChests(v - 1);
++            printf("[host] LvlLimitBoostr in 1%% of chests %s (F1)\n", Host_FpBoostChests() ? "on" : "off");
++            Settings_Set(SET_FPBOOSTCHEST, Host_FpBoostChests());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBOOSTBATTLE], 0)) != 0 && v - 1 != Host_FpBoostBattles()) {
++            Host_SetFpBoostBattles(v - 1);
++            printf("[host] LvlLimitBoostr from 1%% of ? encounters %s (F1)\n", Host_FpBoostBattles() ? "on" : "off");
++            Settings_Set(SET_FPBOOSTBATTLE, Host_FpBoostBattles());
++        }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPBATTLEEVO], 0)) != 0 && v - 1 != Host_FpBattleEvo()) {
++            Host_SetFpBattleEvo(v - 1);
++            printf("[host] battle digivolution %s (F1)\n", Host_FpBattleEvo() ? "on" : "off");
++            Settings_Set(SET_FPBATTLEEVO, Host_FpBattleEvo());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+@@ -1044,6 +1203,20 @@ void Host_GameEvents(void) {
+         Settings_Set(SET_SMOOTH, PsxHd_Smooth());
+         fflush(stdout);
+     }
++    if (r & REQ_FPCEIL) {
++        Host_SetFpCeiling(!Host_FpCeiling());
++        printf("[host] first-person ceilings %s (F10)\n", Host_FpCeiling() ? "on" : "off");
++        notice("First-person ceilings %s (F10)", Host_FpCeiling() ? "on" : "off");
++        Settings_Set(SET_FPCEIL, Host_FpCeiling());
++        fflush(stdout);
++    }
++    if (r & REQ_FPVIEW) {
++        Host_SetFpView((Host_FpView() + 1) % 4);
++        printf("[host] domain camera: %s (F4)\n", Host_FpViewName(Host_FpView()));
++        notice("Domain camera: %s (F4)", Host_FpViewName(Host_FpView()));
++        Settings_Set(SET_FPVIEW, Host_FpView());
++        fflush(stdout);
++    }
+     if (r & REQ_SPEED) {
+         Host_SpeedSet(!Host_SpeedOn());
+         if (!Host_SpeedOn()) {
+diff --git a/host/settings.c b/host/settings.c
+index b96fac8..ed3523d 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,12 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu",
++    "select_hold_menu", "domain_view", "fp_ceilings", "smooth_turns", "mystery_encounters", "mystery_rare", "boost_chests", "boost_battles",
++    "battle_digivolve",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 3, 1, 1, 3, 1, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -266,7 +267,8 @@ void Settings_SetPad(int bit, int code) {
+ int Settings_KeyReserved(int sc) {
+     return sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_F2 ||
+            sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F10 || sc == SDL_SCANCODE_F11 ||
++           sc == SDL_SCANCODE_F12;
+ }
+ 
+ const char *Settings_ButtonName(int bit) {
+@@ -618,6 +620,11 @@ void Settings_Load(int no_window) {
+     printf("[settings] sharpen %d, title_hint %d, speed %d, update_check %d, smooth %d, select_hold_menu %d\n",
+            Settings_Get(SET_SHARPEN), Settings_Get(SET_TITLE_HINT), Settings_Get(SET_SPEED),
+            Settings_Get(SET_UPDATE_CHECK), Settings_Get(SET_SMOOTH), Settings_Get(SET_SELECT_HOLD));
++    printf("[settings] domain_view %d, fp_ceilings %d, smooth_turns %d, mystery_encounters %d, mystery_rare %d\n",
++           Settings_Get(SET_FPVIEW), Settings_Get(SET_FPCEIL), Settings_Get(SET_FPSMOOTHTURN),
++           Settings_Get(SET_FPMYSTERY), Settings_Get(SET_FPMYSTRARE));
++    printf("[settings] boost_chests %d, boost_battles %d, battle_digivolve %d\n", Settings_Get(SET_FPBOOSTCHEST),
++           Settings_Get(SET_FPBOOSTBATTLE), Settings_Get(SET_FPBATTLEEVO));
+     {
+         char fm[32], ws[32], wp[32];
+ 
+diff --git a/host/settings.h b/host/settings.h
+index c7b2372..2628800 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -26,6 +26,14 @@ enum {
+     SET_UPDATE_CHECK, /* 0 / 1: PR.30 ask GitHub for a newer release at start */
+     SET_SMOOTH,       /* 0 / 1: PR.34 smooth frames (F9), on by default */
+     SET_SELECT_HOLD,  /* 0 / 1: PR.38 Select held 1 s opens F1 (issue #5), on by default */
++    SET_FPVIEW,       /* 0..3: FP domain camera (F4): classic, high chase, low chase, first person */
++    SET_FPCEIL,       /* 0 / 1: FP ceilings over walled domains (F10), off by default */
++    SET_FPSMOOTHTURN, /* 0 / 1: FP smooth turning in the 3D domain views, on by default */
++    SET_FPMYSTERY,    /* 0..3: FP mystery encounters: off, one per floor, 30 %, all but bosses */
++    SET_FPMYSTRARE,   /* 0 / 1: FP a ? holds one of the floor's rarer enemy sets, on by default */
++    SET_FPBOOSTCHEST, /* 0 / 1: FP 1 % of all chests hold a LvlLimitBoostr, on by default */
++    SET_FPBOOSTBATTLE, /* 0 / 1: FP 1 % of won ? encounters give a LvlLimitBoostr, on by default */
++    SET_FPBATTLEEVO,  /* 0 / 1: FP battle digivolution (energy bar, Digivolve command), on by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 37ec55d..0b47d82 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -19,6 +19,8 @@
+ extern "C" void Host_RequestSetting(int id, int value);
+ extern "C" void Host_AudioSetVolume(int volume);
+ extern "C" const char *Host_RendererName(void);
++extern "C" const char *Host_FpViewName(int view);
++extern "C" int Host_ModsCount(void);
+ extern "C" int Host_WindowMode(void);
+ extern "C" int Host_WindowHeadless(void);
+ extern "C" void Host_SetWindowMode(int mode);
+@@ -267,6 +269,81 @@ void bind_button(int bit, int slot, const char *label) {
+     }
+ }
+ 
++/* Forb's mods (native only): the domain cameras, mystery encounters, LvlLimitBoostr and the
++ * model mods folder, on a tab of their own. */
++void mods_tab(void) {
++    int fpview = Settings_Get(SET_FPVIEW);
++    bool fpceil = Settings_Get(SET_FPCEIL) != 0;
++    bool fpturn = Settings_Get(SET_FPSMOOTHTURN) != 0;
++    int mystery = Settings_Get(SET_FPMYSTERY);
++    bool rare = Settings_Get(SET_FPMYSTRARE) != 0;
++    bool boostChests = Settings_Get(SET_FPBOOSTCHEST) != 0;
++    bool boostBattles = Settings_Get(SET_FPBOOSTBATTLE) != 0;
++    bool battleEvo = Settings_Get(SET_FPBATTLEEVO) != 0;
++
++    ImGui::SeparatorText("Domains");
++    {
++        const char *views[] = { Host_FpViewName(0), Host_FpViewName(1), Host_FpViewName(2), Host_FpViewName(3) };
++
++        if (ImGui::Combo("Domain camera (F4)", &fpview, views, 4)) {
++            Host_RequestSetting(SET_FPVIEW, fpview);
++        }
++    }
++    ImGui::TextDisabled("F4 cycles the views; the camera moves smoothly between them. In the 3D");
++    ImGui::TextDisabled("views Up moves forward, Left / Right turn, Down turns around.");
++    if (ImGui::Checkbox("Ceilings in first person (F10)", &fpceil)) {
++        Host_RequestSetting(SET_FPCEIL, fpceil);
++    }
++    ImGui::TextDisabled("A roof with the floor's own texture over walled domains.");
++    if (ImGui::Checkbox("Smooth turning in 3D views", &fpturn)) {
++        Host_RequestSetting(SET_FPSMOOTHTURN, fpturn);
++    }
++    ImGui::TextDisabled("The camera and the Digi-Beetle ease round when turning (the game's own");
++    ImGui::TextDisabled("turns and timing stay the same). Off: they snap round as in the original.");
++    ImGui::SeparatorText("Mystery encounters");
++    {
++        /* listed in this order; the setting stores 0 off, 1 one per floor, 2 30 %, 3 all */
++        static const char *const names[] = { "1 per floor", "30% of encounters", "All except bosses", "Off" };
++        static const int values[] = { 1, 2, 3, 0 };
++        int pick = mystery == 0 ? 3 : mystery - 1;
++
++        if (ImGui::Combo("Mystery encounters", &pick, names, 4)) {
++            Host_RequestSetting(SET_FPMYSTERY, values[pick]);
++        }
++    }
++    ImGui::TextDisabled("Wandering Digimon shown as a ? until the battle starts (bosses never).");
++    if (ImGui::Checkbox("A ? holds a rarer Digimon", &rare)) {
++        Host_RequestSetting(SET_FPMYSTRARE, rare);
++    }
++    ImGui::TextDisabled("Swaps a ? for one of the floor's less common enemy groups, from that floor's");
++    ImGui::TextDisabled("own table and levels. Takes effect from the next floor you enter.");
++    ImGui::SeparatorText("LvlLimitBoostr");
++    ImGui::TextDisabled("Raises a party Digimon's level limit by 1 (at its limit, below 99).");
++    if (ImGui::Checkbox("1% of all chests", &boostChests)) {
++        Host_RequestSetting(SET_FPBOOSTCHEST, boostChests);
++    }
++    if (ImGui::Checkbox("1% of all ? encounters", &boostBattles)) {
++        Host_RequestSetting(SET_FPBOOSTBATTLE, boostBattles);
++    }
++    ImGui::SeparatorText("Battle digivolution");
++    if (ImGui::Checkbox("Digivolve in battle", &battleEvo)) {
++        Host_RequestSetting(SET_FPBATTLEEVO, battleEvo);
++    }
++    ImGui::TextDisabled("Your Digimon fill an energy bar by dealing and taking damage. Full, a Rookie");
++    ImGui::TextDisabled("can choose Digivolve: it becomes its Champion form for 3 turns.");
++    ImGui::SeparatorText("Model mods");
++    {
++        int n = Host_ModsCount();
++
++        if (n > 0) {
++            ImGui::Text("%d replacement file%s in use from the mods folder.", n, n == 1 ? "" : "s");
++        } else {
++            ImGui::TextDisabled("No model mods in use.");
++        }
++        ImGui::TextDisabled("Files in mods\\ next to dw2.exe replace the game's own (read at start).");
++    }
++}
++
+ void controls_tab(void) {
+     bool stick = Settings_Get(SET_STICK_DPAD) != 0;
+     bool hold = Settings_Get(SET_SELECT_HOLD) != 0;
+@@ -491,6 +568,10 @@ void SettingsUi_Draw(void) {
+                 sound_tab();
+                 ImGui::EndTabItem();
+             }
++            if (ImGui::BeginTabItem("Forbs Hidden Mods", NULL, tab_flags("Mods"))) {
++                mods_tab();
++                ImGui::EndTabItem();
++            }
+             ImGui::EndTabBar();
+             g_start_tab[0] = 0;
+         }
+diff --git a/host/ui.cpp b/host/ui.cpp
+index f0e5eaf..7706915 100644
+--- a/host/ui.cpp
++++ b/host/ui.cpp
+@@ -220,7 +220,8 @@ void write_shot(void) {
+ 
+ bool is_hotkey(SDL_Scancode sc) {
+     return sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F10 || sc == SDL_SCANCODE_F11 ||
++           sc == SDL_SCANCODE_F12;
+ }
+ 
+ } // namespace
+diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
+new file mode 100644
+index 0000000..bbc4e2d
+--- /dev/null
++++ b/include/stag3000/evo_native.h
+@@ -0,0 +1,28 @@
++#ifndef STAG3000_EVO_NATIVE_H
++#define STAG3000_EVO_NATIVE_H
++
++/* Battle digivolution (Forbs Hidden Mods, native only; src/stag3000/evo_native.inc, built into
++ * battle.c). Each party Digimon has an energy bar that fills as it deals and takes damage. Full,
++ * a Rookie that has a Champion form gets a third command, Digivolve: the Digi-Lab's digivolution
++ * effect plays on the battlefield and it fights as its Champion form (model, animations, stronger
++ * stats) for 3 turns, then returns. The battle copy of the Digimon changes; the party in the save
++ * never does (it is reverted before the battle writes back). F1 > Forbs Hidden Mods toggles it. */
++
++#ifdef DW2_NATIVE
++
++#include "common.h"
++
++/* commandmenu.c / commandinput.c: slot 0..2 may digivolve now (shows the third command) */
++s32 Stg30_EvoCanDigivolve(s32 slot);
++/* commandinput.c: the Digimon in `slot` chose Digivolve (1) or the choice was taken back (0) */
++void Stg30_EvoRequest(s32 slot, s32 on);
++/* commandmenu.c: the command's text, glyphs, 0xFF ended */
++extern u8 Stg30_EvoCommandText[];
++/* fighterhud.c: the DP row of party slot 0..2 (its HUD parts `parts`, already raised and drawn
++ * with the box sprite hidden): the DP gauge and label, then the box stretched to hold them; and
++ * how far the party HUD is raised for it (0: off this battle) */
++void Stg30_EvoDrawBar(s32 slot, void *parts);
++s32 Stg30_EvoHudLift(void);
++
++#endif
++#endif
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+new file mode 100644
+index 0000000..a719d78
+--- /dev/null
++++ b/include/stag4000/fpview.h
+@@ -0,0 +1,71 @@
++#ifndef STAG4000_FPVIEW_H
++#define STAG4000_FPVIEW_H
++
++/* FP: 3D views in the domains (native build only, F4 cycles classic / high chase / low chase /
++ * first person, settings "domain_view"), moving smoothly between them.
++ *
++ * The camera sits in the Digi-Beetle and looks along its facing; the floor and its walls are
++ * drawn by Stg40_FpDrawFloor (floor.c) instead of the retail 9x9 window: cells all around the
++ * beetle out to STG40_FP_RADIUS, clipped against the near plane and the screen guard band in
++ * world space before the GTE projects them, so nothing behind the camera reaches the GTE, and
++ * faded to black with distance. Tiles are made square in this view (z * 40 like x, retail
++ * z * 32): entity positions go through Stg40_FpWorldX / Stg40_FpWorldZ for that.
++ *
++ * Presentation only: game state, turns, RNG and the retail window logic run as before. The
++ * pad mapping in Stg40_PlayerTryMove becomes relative to the facing (Up forward, Left / Right
++ * turn 90 degrees, Down turns around, Up + Left / Right steps diagonally). */
++
++#ifdef DW2_NATIVE
++
++#define STG40_FP_RADIUS 8 /* tiles drawn around the beetle */
++
++/* A 3D view or a transition is up (F4 cycles classic, high chase, low chase, first person):
++ * this file's renderer draws the floor, the classic one stays retail. */
++s32 Stg40_FpActive(void);
++/* World x / z (s16 range) of a map position for models: player-centred and square in FP,
++ * the retail view-centred values otherwise. */
++s32 Stg40_FpWorldX(s32 posX);
++s32 Stg40_FpWorldZ(s32 posY);
++/* A map position too far from the player for s16 world coordinates in FP. */
++s32 Stg40_FpOutOfRange(s32 posX, s32 posY);
++/* The entity / actor is the player, hidden while the camera is at its eye. */
++s32 Stg40_FpHidesEnt(void *ent);
++s32 Stg40_FpHidesActor(void *actor);
++/* The rotation to draw an entity with (the beetle eases round with smooth turning). */
++s32 Stg40_FpDrawHeading(void *ent, s32 rot);
++/* The texture animation of a hidden model (sets the texture slot the draw would set). */
++void Stg40_FpAnimateHiddenTex(void *actor);
++/* The pad as an absolute octant 0..7 for Stg40_PlayerTryMove, or -1 = no step this frame
++ * (turns in place are applied to the entity here). */
++s32 Stg40_FpPadOctant(void *ent);
++/* camera.c, after the retail GsSetRefView2: reads the retail camera back, moves the
++ * transition on and sets this frame's camera when a 3D view or a transition is up. */
++void Stg40_FpCameraTick(void *cameraWork);
++/* Turn-and-move controls (every view but classic, switching when a transition ends). */
++s32 Stg40_FpRelative(void);
++/* floor.c */
++void Stg40_FpDrawFloor(void *floorWork);
++void Stg40_FpDrawShadow(void *loc);
++void Stg40_FpReset(void);
++/* automap.c: the view's facing as an arrow over the beetle on an automap window (before
++ * Stg40_AutomapDrawWindow with the same x, y, cx, cy, scale; fade 0..0xFF). */
++void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade);
++/* Mystery encounters: spawn.c notes each enemy party (boss flag, its pick, a roll), then the
++ * floor's one is picked and (rarer sets on) each ? party swapped for a rarer set of the
++ * floor; Stg40_FpMystery says whether an entity shows as a ? (the F1 setting); the ? itself. */
++void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick);
++void Stg40_FpRollMystery(void);
++s32 Stg40_FpMystery(void *ent);
++void Stg40_FpDrawMystery(void *loc);
++/* LvlLimitBoostr: the pick-a-Digimon prompt (a player state's stateLevel2 from 10: 0 running,
++ * 1 used, 2 None), the battle and chest routes. */
++s32 Stg40_FpBoostPrompt(void *actor, s32 chest);
++void Stg40_FpNoteBattle(void *ent);
++s32 Stg40_FpBattleBoostDue(void);
++void Stg40_FpRollChestBoost(void);
++s32 Stg40_FpChestHasBoost(void *rec);
++void Stg40_FpChestBoostTaken(void *rec);
++
++#endif
++
++#endif /* STAG4000_FPVIEW_H */
+diff --git a/src/main/cd.c b/src/main/cd.c
+index c940887..3f11c51 100644
+--- a/src/main/cd.c
++++ b/src/main/cd.c
+@@ -275,20 +275,39 @@ void Cd_FreeUnlockedFiles(void) {
+ }
+ 
+ s32 Cd_IsFileValid(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* model mods: files numbered past the disc's list exist only in mods/ */
++    if (arg0 >= 0xE5B) {
++        return Host_ModFile(arg0, NULL) != NULL;
++    }
++#endif
+     return Cd_FileLba[arg0] != 0;
+ }
+ 
+ s32 Cd_GetFileSectors(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* model mods (host/mods.c): a replacement file's own size */
++    s32 size;
++    if (Host_ModFile(arg0, &size) != NULL) {
++        return (size + 0x7FF) >> 11;
++    }
++#endif
+     return Cd_FileSectors[arg0];
+ }
+ 
+ s32 Cd_GetFileLba(s32 arg0) {
++#ifdef DW2_NATIVE
++    /* a new file (mods/ only) has no place on the disc; battles only sort their reads by it */
++    if (arg0 >= 0xE5B) {
++        return 0;
++    }
++#endif
+     return Cd_FileLba[arg0];
+ }
+ 
+ void Cd_GetFilePos(s32 arg0, void *arg1) {
+ #ifdef DW2_NATIVE
+-    CdIntToPos(Cd_FileLba[arg0], arg1);
++    CdIntToPos(arg0 >= 0xE5B ? 0 : Cd_FileLba[arg0], arg1);
+ #else
+     /* One argument: arg1 is still in a1 for CdIntToPos's second parameter. */
+     CdIntToPos(Cd_FileLba[arg0]);
+diff --git a/src/main/cdread.c b/src/main/cdread.c
+index 7df184b..8a58d75 100644
+--- a/src/main/cdread.c
++++ b/src/main/cdread.c
+@@ -130,6 +130,23 @@ void Cd_ReadFileAsync(s32 arg0, s32 arg1) {
+     if (Cd_ReadState.state != 0) {
+         while (Cd_PollRead() != 0) {}
+     }
++#ifdef DW2_NATIVE
++    {
++        /* model mods (host/mods.c): the replacement file, at once; the read is done (state 5,
++         * as after the last sector) */
++        s32 size;
++        const void *mod = Host_ModFile(arg0, &size);
++        if (mod != NULL) {
++            memcpy((void *)arg1, mod, size);
++            memset((u8 *)arg1 + size, 0, (((size + 0x7FF) >> 11) << 11) - size);
++            Cd_ReadState.fileId = arg0;
++            Cd_ReadState.buf = arg1;
++            Cd_ReadState.sectorsLeft = 0;
++            Cd_ReadState.state = 5;
++            return;
++        }
++    }
++#endif
+     Cd_GetFilePos(arg0, sp10);
+     r = Cd_GetFileSectors(arg0);
+     Cd_ReadState.sectorsLeft = r;
+diff --git a/src/stag3000/battle.c b/src/stag3000/battle.c
+index e486a11..52d18da 100644
+--- a/src/stag3000/battle.c
++++ b/src/stag3000/battle.c
+@@ -9,6 +9,10 @@
+ #include "stag3000/skillmenu.h"
+ #include "stag3000/targetselect.h"
+ 
++#ifdef DW2_NATIVE
++#include "evo_native.inc" /* battle digivolution (Forbs Hidden Mods) */
++#endif
++
+ /* Task callbacks of the battle descriptor (defined further down). */
+ void Stg30_BattleUpdate(Actor *a0);
+ void Stg30_BattleDestroy(Actor *a0);
+@@ -281,6 +285,9 @@ void Stg30_BattleWonUpdate(Actor *a0) {
+             } else {
+                 Sys_State.modeArg = 2;
+                 Sys_State.nextGameMode = Sys_State.prevGameMode;
++#ifdef DW2_NATIVE
++                Host_FpSetNote(12, 1); /* FP: the battle was won (src/stag4000/fpview_native.inc) */
++#endif
+             }
+             Task_NextState3(a0);
+             break;
+@@ -333,6 +340,9 @@ void Stg30_BattleLostUpdate(Stg30ListOwner *a0) {
+ void Stg30_ResetPartyStats(void) {
+     s32 i;
+ 
++#ifdef DW2_NATIVE
++    Stg30_EvoReturnAll(); /* every battle end comes here: the Champion forms go back first */
++#endif
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Battle.digis[i].state >= 3) {
+             Stg30_Battle.digis[i].attack = Save_GameState.elems[i].attack;
+@@ -434,6 +444,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                 Stg30_Battle.defenseBase[n1] = Stg30_Battle.defenseCur[n1] = Stg30_Battle.digis[n1].defense;
+                 Stg30_Battle.speedBase[n1] = Stg30_Battle.speedCur[n1] = Stg30_Battle.digis[n1].speed;
+             }
++#ifdef DW2_NATIVE
++            Stg30_EvoBattleInit();
++#endif
+             w->field_0 = 0;
+             Task_NextState0(a0);
+             break;
+@@ -454,6 +467,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+             switch (a0->stateLevel2) {
+             case 0:
+             default:
++#ifdef DW2_NATIVE
++                if (Stg30_EvoStep(0)) {
++                    break; /* a Champion form returns before the commands */
++                }
++#endif
+                 for (n2 = 0; n2 < 7; n2++) {
+                     Stg30_Battle.turns[n2].noInterrupt = 0;
+                     Stg30_Battle.turns[n2].noCounter = 0;
+@@ -522,6 +540,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+                     }
+                     break;
+                 }
++#ifdef DW2_NATIVE
++                if (Stg30_EvoStep(1)) {
++                    break; /* Digivolve chosen: the effect plays before the turns */
++                }
++#endif
+                 Task_NextState2(a0);
+                 break;
+             case 2:
+@@ -685,6 +708,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                 }
+                 Task_NextState2(a0);
+             case 4:
++#ifdef DW2_NATIVE
++                Stg30_EvoCredit(Stg30_TurnOrderGet(0)); /* energy from this action */
++#endif
+                 m = Stg30_TurnOrderGet(0);
+                 if (m != Stg30_TurnOrderGet(1)) {
+                     if (Stg30_Battle.turns[Stg30_TurnOrderGet(0)].turnType != 5) {
+@@ -735,6 +761,9 @@ void Stg30_BattleUpdate(Actor *a0) {
+                     break;
+                 }
+                 Task_SetState1(a0, 1);
++#ifdef DW2_NATIVE
++                Stg30_EvoRoundEnd();
++#endif
+                 Stg30_Battle.interruptActive = 1;
+                 for (n7 = 5; n7 >= 0; n7--) {
+                     Stg30_Battle.turns[n7].turnType = 0;
+@@ -756,6 +785,11 @@ void Stg30_BattleUpdate(Actor *a0) {
+ void Stg30_BattleDestroy(Actor *a0) {
+     s32 i;
+ 
++#ifdef DW2_NATIVE
++    for (i = 0; i < 3; i++) {
++        Stg30_EvoReturnData(i); /* never into the save as a Champion form */
++    }
++#endif
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Battle.digis[i].state >= 3) {
+             Save_GameState.elems[i] = Stg30_Battle.digis[i];
+diff --git a/src/stag3000/commandinput.c b/src/stag3000/commandinput.c
+index a74dbf0..c49a574 100644
+--- a/src/stag3000/commandinput.c
++++ b/src/stag3000/commandinput.c
+@@ -3,6 +3,9 @@
+ #include "stag3000/banner.h"
+ #include "stag3000/fightbg.h"
+ #include "stag3000/actionload.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_CommandInputTask(Actor *a0);
+@@ -181,12 +184,18 @@ void Stg30_CommandInputTask(Actor *a0) {
+                         r = Stg30_TargetPrev(0, w->field_0, 0, 0);
+                         w->field_0 = r;
+                         Stg30_Battle.turns[r].turnType = 0;
++#ifdef DW2_NATIVE
++                        Stg30_EvoRequest(r, 0);
++#endif
+                         Task_SetState1(a0, 2);
+                         break;
+                     }
+                     Task_SetState1(a0, 0);
+                     break;
+                 }
++#ifdef DW2_NATIVE
++                Stg30_EvoRequest(w->field_0, Stg30_Battle.menuChoice == 2); /* Digivolve: it guards */
++#endif
+                 if (Stg30_Battle.menuChoice == 0) {
+                     Task_NextState2(a0);
+                     break;
+diff --git a/src/stag3000/commandmenu.c b/src/stag3000/commandmenu.c
+index f23b69a..180d063 100644
+--- a/src/stag3000/commandmenu.c
++++ b/src/stag3000/commandmenu.c
+@@ -3,6 +3,9 @@
+ #include "stag3000/banner.h"
+ #include "stag3000/fightbg.h"
+ #include "stag3000/actionload.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_CommandMenuUpdate(Actor *a0);
+@@ -70,7 +73,12 @@ void Stg30_CommandMenuUpdate(Actor *a0) {
+                         Snd_PlayById(0xC, 0);
+                         break;
+                     }
++#ifdef DW2_NATIVE
++                    /* battle digivolution: a third command when the energy bar is full */
++                    if (Stg30_CommandMenuCursor == (Stg30_EvoCanDigivolve(Stg30_Battle.inputSlot) ? 2 : 1)) break;
++#else
+                     if (Stg30_CommandMenuCursor == 1) break;
++#endif
+                     Stg30_CommandMenuCursor++;
+                     Snd_PlayById(0xC, 0);
+                     break;
+@@ -134,6 +142,24 @@ void Stg30_CommandMenuUpdate(Actor *a0) {
+                     pos.lo = 0x16;
+                     Text_OpenById(text, i + 5, Stg30_CommandMenuCursor != i, pos);
+                 }
++#ifdef DW2_NATIVE
++                if (Stg30_EvoCanDigivolve(Stg30_Battle.inputSlot)) {
++                    args.text = (s32)(sptr)Stg30_EvoCommandText;
++                    args.color = Stg30_CommandMenuCursor != 2;
++                    args.x = 0x16;
++                    args.bigFont = 0;
++                    args.y = 2 * 11 + 0x3C;
++                    args.charDelay = 0;
++                    args.charAdvance = 0;
++                    args.lineAdvance = 0;
++                    Text_Open(&w->text[3], &args);
++                } else {
++                    Text_Close(&w->text[3]);
++                    if (Stg30_CommandMenuCursor > 1) {
++                        Stg30_CommandMenuCursor = 1;
++                    }
++                }
++#endif
+             }
+             break;
+         }
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+new file mode 100644
+index 0000000..03146a6
+--- /dev/null
++++ b/src/stag3000/evo_native.inc
+@@ -0,0 +1,713 @@
++/* Battle digivolution (Forbs Hidden Mods, native only; include/stag3000/evo_native.h).
++ * Included by battle.c under DW2_NATIVE.
++ *
++ * Energy: 0..EVO_MAX per party slot, charged after every action from the HP lost since the last
++ * one: taking damage (EVO_TAKE for a whole max HP), dealing it (EVO_DEAL for a whole enemy max HP)
++ * and EVO_ACT for having had a turn. Full, a Rookie whose digivolution table names a Champion
++ * (Digi_GetEvolutionTarget at its DP) can choose Digivolve: that is its turn (it guards, turn type
++ * 5). After the commands, before the turns run, the Digi-Lab's effect (model 0xDD9, animation 0xDDB,
++ * as Stg20_LabDigivolve) plays on it and halfway through it becomes the Champion: battle copy
++ * digiId, the fighter's model and animations, HP / MP and attack / defense / speed up by EVO_BOOST
++ * percent. It fights 3 turns like that; at the start of the round after, the effect plays again and
++ * it returns, keeping the damage it took (its HP is never brought below 1 by the return). The end of
++ * the battle (won, lost, escaped) returns it at once, before the battle writes the party back. */
++
++#include <stdio.h>
++
++#include "stag3000/evo_native.h"
++
++extern u8 Digi_GetEvolutionTarget(s32 id, s32 val);
++extern void Mem_Free(ActorWork *arg0);
++extern s32 Cd_GetFileSync(s32 arg0);
++extern u8 Digi_GetLearnedSkill(s32 digiId);
++extern GfxTexSlot *Gfx_FindOrLoadTexSlot(s32 id);
++
++/* Actor.u38 transform with its Y rotation (Stg20Rot): the fighter spins in the effect. */
++typedef struct {
++    u8 _pad00[0x42];
++    /* 0x42 */ s16 rotY;
++} Stg30EvoXform;
++
++#define EVO_MAX 100
++#define EVO_TAKE 60  /* energy for losing a whole max HP */
++#define EVO_DEAL 45  /* energy for taking a whole max HP from enemies */
++#define EVO_ACT 4    /* energy for having had a turn */
++#define EVO_RATE 120 /* percent: every gain above times this (120 = 20 % faster) */
++#define EVO_TURNS 3  /* turns it fights in the Champion form */
++#define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the Champion form */
++#define EVO_BOX_GROW 13 /* rows the party HUD box grows by (and is raised by) for the DP row */
++#define EVO_FX_MODEL 0xDD9
++#define EVO_FX_ANIM 0xDDB
++#define EVO_FX_FRAMES 0x78
++#define EVO_SWAP_AT 0x3C /* frame of the effect at which the form changes */
++
++typedef struct {
++    s32 energy;
++    s32 requested;  /* chose Digivolve this round */
++    s32 turnsLeft;  /* > 0: in the Champion form; rounds still to end */
++    s32 revert;     /* return at the start of the next round */
++    /* the Rookie it was */
++    s32 fromId;
++    s32 skillSlot; /* its battle copy's skill list slot holding the Champion's technique, -1 none */
++    s32 skillOld;  /* what that slot held */
++    s32 hpBonus;
++    s32 mpBonus;
++    s16 maxHp;
++    s16 maxMp;
++    s16 attack;
++    s16 defense;
++    s16 speed;
++} Stg30Evo;
++
++static Stg30Evo Stg30_Evo[3];
++static s16 Stg30_EvoHpSeen[6];
++/* The effect runs as a child task of the fighter (its slot 1, which its skill effects use only
++ * during actions): a task is only updated and drawn through its parent. */
++static s32 *Stg30_EvoFxSlot;
++static s32 Stg30_EvoLift; /* party HUD raised by this much for the DP row (0: off this battle) */
++static s32 Stg30_EvoSeqSlot = -1; /* party slot whose effect is playing, -1 none */
++static s32 Stg30_EvoSeqTimer;
++static s32 Stg30_EvoSeqBack;      /* the effect returns it (1) or digivolves it (0) */
++static s32 Stg30_EvoSeqSwapped;
++static s32 Stg30_EvoSeqSpinning;
++
++/* "Digivolve" */
++u8 Stg30_EvoCommandText[] = { 0x0D, 0x2C, 0x2A, 0x2C, 0x39, 0x32, 0x2F, 0x39, 0x28, 0xFF };
++
++typedef struct {
++    s32 modelFileId;
++    s32 animFileId;
++    s32 x;
++    s32 y;
++    s32 z;
++    s32 rotY;
++    s32 duration;
++} Stg30EvoFxArgs; /* Fx_ModelInit's 7 words (Stg20WarpFx) */
++
++static s32 Stg30_EvoTarget(s32 slot) {
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++    s32 t;
++
++    if (d->state < 3 || d->digiId == 0 || Digi_GetRank(d->digiId) != 0) {
++        return 0; /* only Rookies, for now */
++    }
++    t = Digi_GetEvolutionTarget(d->digiId, d->dp);
++    if (t == 0 || Digi_GetRank(t) != 1 || Digi_GetModelFile(t) <= 0) {
++        return 0;
++    }
++    return t;
++}
++
++s32 Stg30_EvoCanDigivolve(s32 slot) {
++    if (!Host_FpBattleEvo() || slot < 0 || slot >= 3) {
++        return 0;
++    }
++    return Stg30_Evo[slot].energy >= EVO_MAX && Stg30_Evo[slot].turnsLeft == 0 && !Stg30_Evo[slot].revert &&
++           Stg30_Battle.digis[slot].hp != 0 && Stg30_EvoTarget(slot) != 0;
++}
++
++void Stg30_EvoRequest(s32 slot, s32 on) {
++    if (slot >= 0 && slot < 3) {
++        Stg30_Evo[slot].requested = on && Stg30_EvoCanDigivolve(slot);
++    }
++}
++
++static void Stg30_EvoSeenNow(void) {
++    s32 i;
++
++    for (i = 0; i < 6; i++) {
++        Stg30_EvoHpSeen[i] = Stg30_Battle.digis[i].hp;
++    }
++}
++
++static void Stg30_EvoBattleInit(void) {
++    Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
++    Stg30_EvoFxSlot = NULL;
++    Stg30_EvoLift = Host_FpBattleEvo() ? EVO_BOX_GROW : 0;
++    Stg30_EvoSeqSlot = -1;
++    Stg30_EvoSeenNow();
++}
++
++static void Stg30_EvoAdd(s32 slot, s32 v) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++
++    if (v <= 0 || e->turnsLeft != 0 || e->revert || Stg30_EvoTarget(slot) == 0) {
++        return;
++    }
++    e->energy += (v * EVO_RATE + 99) / 100;
++    if (e->energy > EVO_MAX) {
++        e->energy = EVO_MAX;
++    }
++}
++
++/* After an action (battle.c, before the turn order moves on): charge from the HP lost since. */
++static void Stg30_EvoCredit(s32 actor) {
++    s32 dealt = 0;
++    s32 lost;
++    s32 i;
++
++    if (!Host_FpBattleEvo()) {
++        Stg30_EvoSeenNow();
++        return;
++    }
++    for (i = 0; i < 6; i++) {
++        DigiRosterEntry *d = &Stg30_Battle.digis[i];
++
++        lost = Stg30_EvoHpSeen[i] - d->hp;
++        if (lost <= 0 || d->maxHp <= 0) {
++            continue;
++        }
++        if (i < 3) {
++            Stg30_EvoAdd(i, (lost * EVO_TAKE + d->maxHp - 1) / d->maxHp);
++        } else {
++            dealt += (lost * EVO_DEAL + d->maxHp - 1) / d->maxHp;
++        }
++    }
++    if (actor >= 0 && actor < 3 && Stg30_Battle.digis[actor].hp != 0) {
++        Stg30_EvoAdd(actor, dealt + EVO_ACT);
++    }
++    Stg30_EvoSeenNow();
++}
++
++static Actor *Stg30_EvoFighter(s32 slot) {
++    return (Actor *)Task_FindFirst(0x509, -1, slot);
++}
++
++/* The fighter's model and animations become those of digiId: its model is built again (the old
++ * one's bone and vertex buffers are sized for the old model). */
++static void Stg30_EvoSwapModel(s32 slot, s32 digiId) {
++    Actor *a = Stg30_EvoFighter(slot);
++    Stg30FighterWork *w;
++    ActorModel *m;
++    Stg30ModelTint *t;
++
++    if (a == NULL) {
++        return;
++    }
++    w = (Stg30FighterWork *)a->work;
++    m = a->model;
++    if (m != NULL) {
++        if (m->screenXY != NULL) {
++            Mem_Free((ActorWork *)m->screenXY);
++        }
++        if (m->vertOtz != NULL) {
++            Mem_Free((ActorWork *)m->vertOtz);
++        }
++        if (m->vertColors != NULL) {
++            Mem_Free((ActorWork *)m->vertColors);
++        }
++        if (m->bones != NULL) {
++            Mem_Free((ActorWork *)m->bones);
++        }
++        Mem_Free((ActorWork *)m);
++        a->model = NULL;
++    }
++    a->digiId = digiId;
++    w->modelFile = Digi_GetModelFile(digiId);
++    Cd_GetFileSync(w->modelFile);
++    Cd_GetFileSync(Digi_GetAnimFile(digiId, 0));
++    t = (Stg30ModelTint *)Gfx_AttachModel(a, w->modelFile);
++    t->otIndex = 3;
++    t->flatR = t->flatG = t->flatB = 0x80;
++    t->clutRow = 0;
++    t->tpageBits = 0;
++    w->drawTex = 1;
++    w->drawWire = 0;
++    w->color.r = w->color.g = w->color.b = 0;
++    w->anim = -1;
++    if (Stg30_Battle.digis[slot].hp == 0) {
++        Stg30_FighterSetAnim(a, 0x64); /* stays down */
++    } else {
++        Stg30_FighterSetAnim(a, 0);
++    }
++}
++
++static s16 Stg30_EvoUp(s32 v) {
++    v += v * EVO_BOOST / 100;
++    return (s16)(v > 999 ? 999 : v);
++}
++
++static s16 Stg30_EvoDown(s32 v) {
++    v = v * 100 / (100 + EVO_BOOST);
++    return (s16)(v < 1 ? 1 : v);
++}
++
++static void Stg30_EvoBecome(s32 slot) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++    s32 t = Stg30_EvoTarget(slot);
++    s16 v;
++
++    if (t == 0) {
++        return;
++    }
++    e->fromId = d->digiId;
++    e->maxHp = d->maxHp;
++    e->maxMp = d->maxMp;
++    e->attack = Stg30_Battle.attackBase[slot];
++    e->defense = Stg30_Battle.defenseBase[slot];
++    e->speed = Stg30_Battle.speedBase[slot];
++    d->digiId = t;
++    v = Stg30_EvoUp(d->maxHp);
++    e->hpBonus = v - d->maxHp;
++    d->maxHp = v;
++    d->hp = d->hp + e->hpBonus > d->maxHp ? d->maxHp : d->hp + e->hpBonus;
++    v = Stg30_EvoUp(d->maxMp);
++    e->mpBonus = v - d->maxMp;
++    d->maxMp = v;
++    d->mp = d->mp + e->mpBonus > d->maxMp ? d->maxMp : d->mp + e->mpBonus;
++    Stg30_Battle.attackBase[slot] = Stg30_EvoUp(Stg30_Battle.attackBase[slot]);
++    Stg30_Battle.defenseBase[slot] = Stg30_EvoUp(Stg30_Battle.defenseBase[slot]);
++    Stg30_Battle.speedBase[slot] = Stg30_EvoUp(Stg30_Battle.speedBase[slot]);
++    Stg30_Battle.attackCur[slot] = Stg30_EvoUp(Stg30_Battle.attackCur[slot]);
++    Stg30_Battle.defenseCur[slot] = Stg30_EvoUp(Stg30_Battle.defenseCur[slot]);
++    Stg30_Battle.speedCur[slot] = Stg30_EvoUp(Stg30_Battle.speedCur[slot]);
++    d->attack = Stg30_Battle.attackCur[slot];
++    d->defense = Stg30_Battle.defenseCur[slot];
++    d->speed = Stg30_Battle.speedCur[slot];
++    e->energy = 0;
++    e->requested = 0;
++    e->turnsLeft = EVO_TURNS + 1; /* the round it digivolves in (it guards) ends first */
++    /* the Champion's own technique (Digi_GetLearnedSkill, as the Digi-Lab gives it), for these
++     * turns only: in a free slot of its list, else in the last one */
++    e->skillSlot = -1;
++    {
++        s32 k = Digi_GetLearnedSkill(t);
++        s32 i;
++        s32 known = 0;
++
++        for (i = 0; i < 12; i++) {
++            known |= d->skills[i] == k;
++        }
++        if (k != 0 && !known) {
++            for (i = 0; i < 12 && d->skills[i] != 0; i++) {
++            }
++            e->skillSlot = i < 12 ? i : 11;
++            e->skillOld = d->skills[e->skillSlot];
++            d->skills[e->skillSlot] = (u8)k;
++        }
++    }
++    e->revert = 0;
++    Stg30_EvoHpSeen[slot] = d->hp;
++    printf("[evo] slot %d digivolves: %d -> %d\n", slot, e->fromId, t);
++}
++
++/* Back to the Rookie: data only (the end of the battle calls this for every slot). */
++static void Stg30_EvoReturnData(s32 slot) {
++    Stg30Evo *e = &Stg30_Evo[slot];
++    DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++
++    if (e->turnsLeft == 0 && !e->revert) {
++        return;
++    }
++    d->digiId = (u8)e->fromId;
++    d->maxHp = e->maxHp;
++    if (d->hp != 0) {
++        d->hp -= e->hpBonus;
++        if (d->hp < 1) {
++            d->hp = 1;
++        }
++        if (d->hp > d->maxHp) {
++            d->hp = d->maxHp;
++        }
++    }
++    if (e->skillSlot >= 0) {
++        d->skills[e->skillSlot] = (u8)e->skillOld; /* the Champion's technique goes with it */
++        e->skillSlot = -1;
++    }
++    d->maxMp = e->maxMp;
++    d->mp -= e->mpBonus;
++    if (d->mp < 0) {
++        d->mp = 0;
++    }
++    if (d->mp > d->maxMp) {
++        d->mp = d->maxMp;
++    }
++    Stg30_Battle.attackBase[slot] = e->attack;
++    Stg30_Battle.defenseBase[slot] = e->defense;
++    Stg30_Battle.speedBase[slot] = e->speed;
++    Stg30_Battle.attackCur[slot] = Stg30_EvoDown(Stg30_Battle.attackCur[slot]);
++    Stg30_Battle.defenseCur[slot] = Stg30_EvoDown(Stg30_Battle.defenseCur[slot]);
++    Stg30_Battle.speedCur[slot] = Stg30_EvoDown(Stg30_Battle.speedCur[slot]);
++    d->attack = Stg30_Battle.attackCur[slot];
++    d->defense = Stg30_Battle.defenseCur[slot];
++    d->speed = Stg30_Battle.speedCur[slot];
++    e->turnsLeft = 0;
++    e->revert = 0;
++    e->energy = 0;
++    Stg30_EvoHpSeen[slot] = d->hp;
++    printf("[evo] slot %d returns to %d\n", slot, e->fromId);
++}
++
++/* The end of the battle: every Champion form back at once (model too: the victory poses use the
++ * Rookie's animations), before the party is written back. */
++static void Stg30_EvoReturnAll(void) {
++    s32 i;
++
++    if (Stg30_EvoFxSlot != NULL && *Stg30_EvoFxSlot != 0) {
++        Task_Destroy(Stg30_EvoFxSlot);
++    }
++    Stg30_EvoFxSlot = NULL;
++    Stg30_EvoSeqSlot = -1;
++    for (i = 0; i < 3; i++) {
++        if (Stg30_Evo[i].turnsLeft != 0 || Stg30_Evo[i].revert) {
++            Stg30_EvoReturnData(i);
++            Stg30_EvoSwapModel(i, Stg30_Battle.digis[i].digiId);
++        }
++        Stg30_Evo[i].requested = 0;
++    }
++}
++
++/* The end of a round (battle.c): count the Champion forms' turns. */
++static void Stg30_EvoRoundEnd(void) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        Stg30Evo *e = &Stg30_Evo[i];
++
++        e->requested = 0;
++        if (e->turnsLeft != 0) {
++            if (--e->turnsLeft == 0 || Stg30_Battle.digis[i].hp == 0) {
++                e->turnsLeft = 1; /* still the Champion until the effect returns it */
++                e->revert = 1;
++            }
++        }
++    }
++}
++
++/* Runs the effect for one slot; 1 while it plays. */
++static s32 Stg30_EvoSequence(void) {
++    s32 slot = Stg30_EvoSeqSlot;
++    Actor *f = Stg30_EvoFighter(slot);
++    Stg30FighterWork *w;
++    Stg30EvoFxArgs args;
++    Actor *fx;
++
++    if (f == NULL) {
++        Stg30_EvoSeqSlot = -1;
++        return 0;
++    }
++    w = (Stg30FighterWork *)f->work;
++    if (Stg30_EvoSeqTimer == 0) {
++        Stg30_SetCameraShot(slot + 2);
++        Cd_GetFileSync(EVO_FX_MODEL);
++        Cd_GetFileSync(EVO_FX_ANIM);
++        args.modelFileId = EVO_FX_MODEL;
++        args.animFileId = EVO_FX_ANIM;
++        args.x = w->homeX;
++        args.y = w->homeY;
++        args.z = w->homeZ;
++        args.rotY = w->facing;
++        args.duration = EVO_FX_FRAMES;
++        Stg30_EvoFxSlot = &((s32 *)f->u34.children)[1];
++        Task_Create(7, Stg30_EvoFxSlot, (s32)(sptr)&args);
++        Stg30_EvoSeqSwapped = 0;
++        Snd_PlayById(0xA, 0);
++    }
++    Stg30_EvoSeqTimer++;
++    {
++        /* it spins, faster and faster up to the change, then slows to face the front again */
++        Stg30EvoXform *o = (Stg30EvoXform *)f->u38.ptr38;
++        s32 t = Stg30_EvoSeqTimer;
++        s32 v = t < EVO_SWAP_AT ? 0x24 + t * 9 : EVO_FX_FRAMES - t > 0 ? 0x24 + (EVO_FX_FRAMES - t) * 9 : 0x48;
++
++        if (o != NULL) {
++            if (t < EVO_FX_FRAMES || ((o->rotY - w->facing) & 0xFFF) > v) {
++                o->rotY = (s16)((o->rotY + v) & 0xFFF);
++                Stg30_EvoSeqSpinning = 1;
++            } else {
++                o->rotY = (s16)w->facing;
++                Stg30_EvoSeqSpinning = 0;
++            }
++        }
++    }
++    if (!Stg30_EvoSeqSwapped && Stg30_EvoSeqTimer >= EVO_SWAP_AT) {
++        Stg30_EvoSeqSwapped = 1;
++        if (Stg30_EvoSeqBack) {
++            Stg30_EvoReturnData(slot);
++        } else {
++            Stg30_EvoBecome(slot);
++        }
++        Stg30_EvoSwapModel(slot, Stg30_Battle.digis[slot].digiId);
++    }
++    fx = Stg30_EvoFxSlot != NULL ? (Actor *)P32(Actor, *Stg30_EvoFxSlot) : NULL;
++    if (Stg30_EvoSeqSpinning && Stg30_EvoSeqTimer < EVO_FX_FRAMES + 90) {
++        return 1; /* still turning back to the front */
++    }
++    if (Stg30_EvoSeqTimer < EVO_FX_FRAMES + 20 && (fx == NULL || fx->stateLevel0 != 3 ||
++                                                   Stg30_EvoSeqTimer < EVO_SWAP_AT + 20)) {
++        return 1;
++    }
++    {
++        Stg30EvoXform *o = (Stg30EvoXform *)f->u38.ptr38;
++
++        if (o != NULL) {
++            o->rotY = (s16)w->facing;
++        }
++    }
++    if (Stg30_EvoFxSlot != NULL && *Stg30_EvoFxSlot != 0) {
++        Task_Destroy(Stg30_EvoFxSlot);
++    }
++    Stg30_EvoFxSlot = NULL;
++    Stg30_SetCameraShot(1);
++    Stg30_EvoSeqSlot = -1;
++    return 0;
++}
++
++/* battle.c: phase 0 at the start of a round (returns), phase 1 after the commands (digivolves).
++ * 1 while an effect plays (the battle waits). */
++static s32 Stg30_EvoStep(s32 phase) {
++    s32 i;
++
++    if (Stg30_EvoSeqSlot >= 0 && Stg30_EvoSequence()) {
++        return 1;
++    }
++    for (i = 0; i < 3; i++) { /* the next one, if two or three digivolve at once */
++        Stg30Evo *e = &Stg30_Evo[i];
++
++        if (phase == 0 && e->revert) {
++            Stg30_EvoSeqBack = 1;
++        } else if (phase == 1 && e->requested && Stg30_Battle.turns[i].turnType == 5 &&
++                   Stg30_EvoCanDigivolve(i)) {
++            Stg30_EvoSeqBack = 0;
++        } else {
++            if (phase == 1) {
++                e->requested = 0;
++            }
++            continue;
++        }
++        e->requested = 0;
++        Stg30_EvoSeqSlot = i;
++        Stg30_EvoSeqTimer = 0;
++        return Stg30_EvoSequence();
++    }
++    return 0;
++}
++
++/* ---- the DP row (fighterhud.c) ---- */
++
++typedef struct {
++    GfxPartOTag tag;
++    u8 r, g, b, code;
++    s16 x, y;
++    u16 w, h;
++} Stg30EvoTile;
++
++static void Stg30_EvoTile(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h, u32 rgb) {
++    Stg30EvoTile *p = (Stg30EvoTile *)Sys_State.packet.addr;
++    s32 sx = Sys_State.centerX.s == 0x140; /* as Gfx_DrawPartsEx: 640 wide, 480 high */
++    s32 sy = Sys_State.centerY.s == 0xF0;
++
++    if (w <= 0 || h <= 0) {
++        return;
++    }
++    x -= 160; /* 320 x 240 screen to centred coordinates */
++    y -= 120;
++    p->tag.len = 3;
++    p->code = 0x60; /* TILE */
++    p->r = rgb >> 16;
++    p->g = rgb >> 8;
++    p->b = rgb;
++    p->x = x << sx;
++    p->y = y << sy;
++    p->w = w << sx;
++    p->h = h << sy;
++    p->tag.addr = ot->addr;
++    ot->addr = (u32)(uptr)p;
++    Sys_State.packet.addr = (sptr)(p + 1);
++}
++
++s32 Stg30_EvoHudLift(void) {
++    return Stg30_EvoLift;
++}
++
++/* The party HUD box is one 96 x 49 sprite (013B entry 0x4A; layout 01A1 entries 0x23..0x25):
++ * the EL panel and the status panel on the left (columns 0..33), the HP / MP panel on the right
++ * (34..95), the name strip below (rows 31..48). The DP row makes it EVO_BOX_GROW rows taller:
++ * the right panel gets a third section like MP's (its gauge trough and the panel's shaded bottom,
++ * rows 18..30), the plain rows 11..17 going under the MP numbers instead; the left panel grows
++ * with plain rows from the EL panel (3..6) above its own shaded bottom (24..30); the name strip
++ * and the bottom edge move down. The whole box is raised by as much, so the name strip stays
++ * where it was. The DP gauge is the game's HP gauge drawn 26 rows lower, the label the HP
++ * label's P with a D drawn in its style. */
++#define EVO_BOX_FILE 0x013B004A
++#define EVO_GAUGE_FILE 0x013B001C
++#define EVO_DP_DY 26 /* HP section to DP section */
++
++typedef struct {
++    u8 dst;  /* first box row it is drawn at */
++    u8 src;  /* first sprite row */
++    u8 n;    /* rows */
++} Stg30EvoSlice;
++
++static const Stg30EvoSlice Stg30_EvoRight[] = { { 0, 0, 24 }, { 24, 11, 7 }, { 31, 18, 13 }, { 44, 31, 18 } };
++static const Stg30EvoSlice Stg30_EvoLeft[] = {
++    { 0, 0, 24 }, { 24, 3, 4 }, { 28, 3, 4 }, { 32, 3, 4 }, { 36, 3, 1 }, { 37, 24, 7 }, { 44, 31, 18 },
++};
++
++/* One textured quad from the box sprite: columns c0..c0+w, sprite rows src..src+n at box row dst. */
++static void Stg30_EvoBoxQuad(GfxPartOTag *ot, GfxPartCell *e, GfxPartTexSlot *t, s32 bx, s32 by, s32 c0, s32 w,
++                             const Stg30EvoSlice *sl) {
++    GfxPartPolyFT4 *p = (GfxPartPolyFT4 *)Sys_State.packet.addr;
++    s32 sx = Sys_State.centerX.s == 0x140;
++    s32 sy = Sys_State.centerY.s == 0xF0;
++    s32 x0 = bx + e->x + c0;
++    s32 y0 = by + e->y + sl->dst;
++    s32 u = e->u + t->u + c0;
++    s32 v = e->v + sl->src;
++    s32 i;
++
++    p->c.r = p->c.g = p->c.b = 0x80;
++    p->tag.len = 9;
++    p->c.code = 0x2C; /* POLY_FT4, as Gfx_DrawPartQuadsRot */
++    for (i = 0; i < 4; i++) {
++        p->v[i].x = (u16)((x0 + ((i & 1) ? w : 0)) << sx);
++        p->v[i].y = (u16)((y0 + ((i & 2) ? sl->n : 0)) << sy);
++        p->v[i].u = (u8)(u + ((i & 1) ? w : 0));
++        p->v[i].v = (u8)(v + ((i & 2) ? sl->n : 0));
++    }
++    if (p->v[1].u == 0) {
++        p->v[1].u = p->v[3].u = 0xFF;
++    }
++    p->v[0].extra = ((e->clutY + t->clutY + e->clutRow) << 6) | (((e->clutX + t->clutX) >> 4) & 0x3F);
++    p->v[1].extra = t->tpage;
++    p->tag.addr = ot->addr;
++    ot->addr = (u32)(uptr)p;
++    Sys_State.packet.addr = (sptr)(p + 1);
++}
++
++/* "D" and "P" in the HP label's 5 x 5 letters (the P is the label's own) */
++static const u8 Stg30_EvoGlyphs[2][5] = { { 0x1E, 0x11, 0x11, 0x11, 0x1E }, { 0x1E, 0x11, 0x11, 0x1E, 0x10 } };
++
++static s32 Stg30_EvoLit(s32 g, s32 i, s32 b) {
++    return i >= 0 && i < 5 && b >= 0 && b < 5 && (Stg30_EvoGlyphs[g][i] & (0x10 >> b));
++}
++
++static void Stg30_EvoLabel(GfxPartOTag *ot, s32 x, s32 y) {
++    s32 g;
++    s32 i;
++    s32 b;
++
++    /* drawn last = on top: the letters first, then their dark shadow one down and right */
++    for (g = 0; g < 2; g++) {
++        for (i = 0; i < 5; i++) {
++            for (b = 0; b < 5; b++) {
++                if (Stg30_EvoLit(g, i, b)) {
++                    Stg30_EvoTile(ot, x + g * 6 + b, y + i, 1, 1, 0x88C8C8);
++                }
++            }
++        }
++    }
++    for (g = 0; g < 2; g++) {
++        for (i = 0; i < 5; i++) {
++            for (b = 0; b < 5; b++) {
++                if (Stg30_EvoLit(g, i, b) && !Stg30_EvoLit(g, i + 1, b + 1)) {
++                    Stg30_EvoTile(ot, x + g * 6 + b + 1, y + i + 1, 1, 1, 0x000008);
++                }
++            }
++        }
++    }
++}
++
++/* The MP numbers' digit parts (013B 0x1F..0x24: max 0x80, current 0x100), and the "/" and a "%"
++ * in the digits' style: lit pixels in the label colour, each with its shadow down and right. */
++#define EVO_DIGITS_FIRST 0x013B001F
++#define EVO_DIGITS_LAST 0x013B0024
++#define EVO_PCT_DX 6
++static const u8 Stg30_EvoSlash[5] = { 0x2, 0x6, 0x4, 0xC, 0x8 };            /* the game's "/", 4 wide */
++static const u8 Stg30_EvoPercent[5] = { 0x19, 0x1A, 0x04, 0x0B, 0x13 };     /* 5 wide */
++
++static void Stg30_EvoGlyph(GfxPartOTag *ot, const u8 *rows, s32 w, s32 x, s32 y) {
++    s32 i;
++    s32 b;
++
++#define EVO_LIT(i, b) ((i) >= 0 && (i) < 5 && (b) >= 0 && (b) < w && (rows[i] & (1 << (w - 1 - (b)))))
++    for (i = 0; i < 5; i++) {
++        for (b = 0; b < w; b++) {
++            if (EVO_LIT(i, b)) {
++                Stg30_EvoTile(ot, x + b, y + i, 1, 1, 0x88C8C8);
++            }
++        }
++    }
++    for (i = 0; i < 5; i++) {
++        for (b = 0; b < w; b++) {
++            if (EVO_LIT(i, b) && !EVO_LIT(i + 1, b + 1)) {
++                Stg30_EvoTile(ot, x + b + 1, y + i + 1, 1, 1, 0x000008);
++            }
++        }
++    }
++#undef EVO_LIT
++}
++
++/* fighterhud.c, after it drew the (raised) parts with the box sprite hidden: the DP gauge and
++ * label, then the stretched box under everything. */
++void Stg30_EvoDrawBar(s32 slot, void *parts) {
++    static Stg30Part gauge[11]; /* the gauge's 4 parts and the percentage's 6 digits */
++    Stg30Evo *e;
++    Stg30Part *q;
++    Stg30Part *box = NULL;
++    GfxPartCell *cell;
++    GfxPartTexSlot *tex;
++    GfxPartOTag *ot;
++    s32 n = 0;
++    s32 pct;
++    s32 num;
++    s32 den;
++    s32 i;
++
++    if (Stg30_EvoLift == 0 || slot < 0 || slot >= 3 || parts == NULL) {
++        return;
++    }
++    e = &Stg30_Evo[slot];
++    for (q = (Stg30Part *)parts; q->fileId != 0; q++) {
++        if (q->fileId == EVO_BOX_FILE) {
++            box = q;
++        } else if (q->fileId == EVO_GAUGE_FILE && n < 10) {
++            gauge[n] = *q;
++            gauge[n].y += EVO_DP_DY;
++            n++;
++        } else if (q->fileId >= EVO_DIGITS_FIRST && q->fileId <= EVO_DIGITS_LAST && n < 10) {
++            /* the MP numbers' digits, one section lower and a little left (room for the %) */
++            gauge[n] = *q;
++            gauge[n].y += EVO_DP_DY - 13;
++            gauge[n].x -= EVO_PCT_DX;
++            n++;
++        }
++    }
++    if (box == NULL) {
++        return;
++    }
++    gauge[n].fileId = 0;
++    /* the gauge: energy; full and ready, it flashes; as the Champion, the turns it has left */
++    if (e->turnsLeft != 0 || e->revert) {
++        num = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
++        den = EVO_TURNS;
++    } else {
++        num = Stg30_EvoTarget(slot) != 0 ? e->energy : 0;
++        den = EVO_MAX;
++        if (num >= EVO_MAX && Stg30_Battle.digis[slot].hp != 0 && ((Sys_State.frameCount >> 3) & 1)) {
++            num = 0;
++        }
++    }
++    Stg30_SetGaugeParts(gauge, 0x400, num, den);
++    /* under it, as MP's numbers: how full, "62/100%" (as the Champion: the turns left, in %) */
++    pct = e->turnsLeft != 0 || e->revert ? (e->revert ? 0 : (e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft) * 100 / EVO_TURNS)
++                                         : Stg30_EvoTarget(slot) != 0 ? e->energy * 100 / EVO_MAX : 0;
++    Gfx_SetPartsNumber((GfxPart *)gauge, 0x100, 3, pct);
++    Gfx_SetPartsNumber((GfxPart *)gauge, 0x80, 3, 100);
++    Gfx_DrawParts((s32)(sptr)gauge);
++    ot = (GfxPartOTag *)Sys_State.otLayers.addr[((u8 *)box)[0x0B]]; /* its otLayer (Rec1D6B4) */
++    cell = (GfxPartCell *)Cd_GetFileEntry(EVO_BOX_FILE);
++    /* the label where the HP label is, 26 rows lower (the label sprite: x -11, y -18) */
++    Stg30_EvoLabel(ot, 160 + box->x - 11, 120 + box->y - 18 + EVO_DP_DY);
++    /* the "/" between the numbers (the MP one's place, x 20) and a "%" after them */
++    Stg30_EvoGlyph(ot, Stg30_EvoSlash, 4, 160 + box->x + 20 - EVO_PCT_DX, 120 + box->y + EVO_DP_DY - 13);
++    Stg30_EvoGlyph(ot, Stg30_EvoPercent, 5, 160 + box->x + 37 + 6 - EVO_PCT_DX, 120 + box->y + EVO_DP_DY - 13);
++    tex = (GfxPartTexSlot *)Gfx_FindOrLoadTexSlot(EVO_BOX_FILE & 0xFFFF0000);
++    for (i = 0; i < (s32)(sizeof(Stg30_EvoRight) / sizeof(Stg30_EvoRight[0])); i++) {
++        Stg30_EvoBoxQuad(ot, cell, tex, box->x, box->y, 34, cell->w - 34, &Stg30_EvoRight[i]);
++    }
++    for (i = 0; i < (s32)(sizeof(Stg30_EvoLeft) / sizeof(Stg30_EvoLeft[0])); i++) {
++        Stg30_EvoBoxQuad(ot, cell, tex, box->x, box->y, 0, 34, &Stg30_EvoLeft[i]);
++    }
++}
+diff --git a/src/stag3000/fighterhud.c b/src/stag3000/fighterhud.c
+index 928efc0..a6e2517 100644
+--- a/src/stag3000/fighterhud.c
++++ b/src/stag3000/fighterhud.c
+@@ -18,6 +18,9 @@
+ #include "stag3000/fightmsg.h"
+ #include "stag3000/popup.h"
+ #include "stag3000/interruptselect.h"
++#ifdef DW2_NATIVE
++#include "stag3000/evo_native.h"
++#endif
+ 
+ /* Task callbacks the descriptors below need (defined further down). */
+ void Stg30_FighterHudInit(Actor *a0, PTR32(Stg30Ref) *args);
+@@ -71,6 +74,7 @@ void Stg30_FighterHudUpdate(Stg30TaskHead *a0) {
+             args.color = 0;
+             args.x = Stg30_FighterHudNamePos[a0->param].x;
+             args.y = Stg30_FighterHudNamePos[a0->param].y;
++
+             args.charDelay = 8;
+             args.charAdvance = 0;
+             args.lineAdvance = 0;
+@@ -92,6 +96,7 @@ void Stg30_FighterHudUpdate(Stg30TaskHead *a0) {
+ 
+                     if (a0->param < 3) {
+                         pos = Stg30_OrderLabelPos[a0->param];
++                        pos.hi -= Stg30_EvoHudLift();
+                     } else {
+                         pos.lo = (u16)Stg30_FighterHudParts[a0->param - 3];
+                         pos.hi = (u16)((u32)Stg30_FighterHudParts[a0->param - 3] >> 16);
+@@ -248,6 +253,30 @@ void Stg30_FighterHudDraw(Actor *a0) {
+         } else {
+             Stg30_SetGaugeParts(p, 0x20, d->hp, d->maxHp);
+         }
++#ifdef DW2_NATIVE
++        /* battle digivolution: the party box grows a DP row (and is raised as much, so its name
++         * strip stays put); the box sprite itself is drawn stretched afterwards, under the parts */
++        t = a0->param < 3 && w->openScale == 0x1000 ? Stg30_EvoHudLift() : 0;
++        if (t != 0) {
++            for (q = p; q->fileId != 0; q++) {
++                q->y -= t;
++                if (q->fileId == 0x013B004A) {
++                    q->visible = 0;
++                }
++            }
++        }
++#endif
+         Gfx_DrawParts((EntA0 *)p);
++#ifdef DW2_NATIVE
++        if (t != 0) {
++            Stg30_EvoDrawBar(a0->param, p);
++            for (q = p; q->fileId != 0; q++) {
++                q->y += t;
++                if (q->fileId == 0x013B004A) {
++                    q->visible = 1;
++                }
++            }
++        }
++#endif
+     }
+ }
+diff --git a/src/stag4000/automap.c b/src/stag4000/automap.c
+index b575734..5502340 100644
+--- a/src/stag4000/automap.c
++++ b/src/stag4000/automap.c
+@@ -12,6 +12,9 @@
+ #include "stag4000/player.h"
+ #include "stag4000/enemy.h"
+ #include "stag4000/entity.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptor comes first). */
+ void Stg40_AutomapInit(void);
+@@ -440,9 +443,16 @@ void Stg40_AutomapDrawModes(ActorWork *w) {
+             switch (i) {
+             case 0:
+                 loc = Dung_StatePtr->playerLoc;
++#ifdef DW2_NATIVE
++                /* FP: the facing arrow, linked first so it draws over the window */
++                Stg40_FpDrawMapArrow(0x50, 0, loc->u0.pair.field_0, loc->u0.pair.field_2, 3, t->modeFade[0]);
++#endif
+                 Stg40_AutomapDrawWindow(t, 0x50, 0, loc->u0.pair.field_0, loc->u0.pair.field_2, 0x11, 0x11, 3, t->modeFade[0]);
+                 break;
+             case 1:
++#ifdef DW2_NATIVE
++                Stg40_FpDrawMapArrow(0, 0, 0x20, 0x18, 4, t->modeFade[1]);
++#endif
+                 Stg40_AutomapDrawWindow(t, 0, 0, 0x20, 0x18, 0x41, 0x31, 4, t->modeFade[1]);
+                 break;
+             }
+diff --git a/src/stag4000/camera.c b/src/stag4000/camera.c
+index 1081913..1eb964e 100644
+--- a/src/stag4000/camera.c
++++ b/src/stag4000/camera.c
+@@ -15,6 +15,9 @@
+ #include "stag4000/spawn.h"
+ #include "stag4000/automap.h"
+ #include "stag4000/camera.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ TaskDesc Stg40_CameraDesc = {
+     (TaskInitFn)Stg40_CameraInit, Stg40_CameraUpdate, Task_DefaultDestroy, (TaskFn)Stg40_CameraDraw, 0x274, 0,
+@@ -144,6 +147,12 @@ void Stg40_CameraUpdate(Actor *a0) {
+         v.super = &w->coord;
+         GsSetProjection(w->view.words[6]);
+         GsSetRefView2(&v);
++#ifdef DW2_NATIVE
++        /* FP: the retail camera above always runs (its scripts too; Stg40_CamIsMoving waits on
++         * them) and is read back as the classic view; a 3D view or a transition sets its own
++         * camera over it */
++        Stg40_FpCameraTick(w);
++#endif
+         break;
+     case 2:
+         break;
+diff --git a/src/stag4000/floor.c b/src/stag4000/floor.c
+index fda9c22..6dcba03 100644
+--- a/src/stag4000/floor.c
++++ b/src/stag4000/floor.c
+@@ -7,6 +7,7 @@
+ /* declared with its return type (an implicit int declaration reads the unextended high bits
+  * natively) */
+ u16 Rand_GetAt(u32 arg0);
++#include "stag4000/fpview.h"
+ #endif
+ 
+ u8 Stg40_FloorPrimIdx[] = {
+@@ -88,6 +89,12 @@ void Stg40_DrawEntityShadow(Stg40Loc *loc) {
+     s32 centerX;
+     s32 centerY;
+ 
++#ifdef DW2_NATIVE
++    if (Stg40_FpActive()) { /* FP: no retail grid this frame; clipped like the floor */
++        Stg40_FpDrawShadow(loc);
++        return;
++    }
++#endif
+     if ((loc->posX & 0x3F) == 0 && (loc->posY & 0x3F) == 0) {
+         col = loc->posX / 64 - Stg40_RootState->viewX / 64 + 4 + STG40_WIDE;
+         row = loc->posY / 64 - Stg40_RootState->viewY / 64 + 4;
+@@ -643,6 +650,9 @@ void Stg40_FloorInit(Actor *a0, s32 *ids) {
+ 
+     Stg40_FloorTask = a0;
+     Stg40_FloorWork = w;
++#ifdef DW2_NATIVE
++    Stg40_FpReset(); /* FP: a new floor takes the facing from the beetle again */
++#endif
+     w->texCount = 0;
+     w->primCount = 0;
+     for (i = 0; i < 2; i++) {
+@@ -696,6 +706,11 @@ void Stg40_FloorUpdate(Actor *a0) {
+         break;
+     case 1:
+         Stg40_ScrollUpdate(a0);
++#ifdef DW2_NATIVE
++        if (Stg40_FpActive()) {
++            break; /* FP: the retail grid would project points behind the camera */
++        }
++#endif
+         Stg40_ProjectGrid((Stg40FloorWork *)w);
+         Stg40_FillTileCache(w);
+         break;
+@@ -714,6 +729,16 @@ void Stg40_FloorDraw(Actor *a0) {
+         f = 0;
+     }
+ #ifdef DW2_NATIVE
++    if (Stg40_FpActive()) {
++        /* FP: own floor; not a lattice, so no frames drawn again in between */
++        if (f) {
++            Stg40_FpDrawFloor(w);
++        }
++        for (p = w->texIds; *p != -1; p++) {
++            Gfx_FindOrLoadTexSlot(*p);
++        }
++        return;
++    }
+     Host_SmoothScene(); /* PR.34: dungeon frames are drawn again between frames */
+ #endif
+     if (f) {
+@@ -723,3 +748,7 @@ void Stg40_FloorDraw(Actor *a0) {
+         Gfx_FindOrLoadTexSlot(*p);
+     }
+ }
++
++#ifdef DW2_NATIVE
++#include "fpview_native.inc"
++#endif
+diff --git a/src/stag4000/fpview_math.inc b/src/stag4000/fpview_math.inc
+new file mode 100644
+index 0000000..da7c565
+--- /dev/null
++++ b/src/stag4000/fpview_math.inc
+@@ -0,0 +1,383 @@
++/* FP: the pure geometry of the 3D domain views (no game state, no GTE): tuning, camera poses
++ * and their blending, world -> camera, clipping against the near plane and the guard band,
++ * fog and the retail wall cull.
++ * Included by fpview_native.inc, and by a standalone preview renderer, so both run this
++ * same code. Needs s32 / u8 and <math.h>. */
++
++#ifndef STG40_FP_RADIUS
++#define STG40_FP_RADIUS 8
++#endif
++
++#define FP_TILE 0xA00           /* tile size in world units (x; z too in this view) */
++#define FP_HALF 0x500           /* half a tile */
++#define FP_EYE 0x2A0            /* eye height above the floor (walls are 0x500) */
++#define FP_PITCH 0x0C0          /* look down a little: reference point drop per 0x1000 ahead */
++#define FP_H 384                /* projection (GTE units, before the game's halving): ~80 deg */
++#define FP_NEAR 0x100           /* near plane, camera z */
++#define FP_GUARD 1.45f          /* clip guard band: x / y beyond the screen edge by this factor */
++#define FP_FOG_START (FP_TILE * 2.5f)          /* first person: fog from 2.5 tiles */
++#define FP_FOG_START_CHASE (FP_TILE * 4.5f)    /* chase views: fog from 4.5 tiles */
++#define FP_FOG_END (FP_TILE * (STG40_FP_RADIUS - 0.5f))
++#define FP_WALL 0x500           /* wall height */
++#define FP_HIDE_DIST 0xA00      /* the beetle is hidden while the eye is within a tile of it
++                                 * (sideways), so a camera moving in never passes through it */
++#define FP_BLEND_FRAMES 26      /* camera transition length in game frames (30 a second) */
++/* camera presets: pivot height above the floor, distance back from the pivot, pitch in
++ * degrees below the horizon, projection */
++#define FP_HIGH_PIVOT 0x300
++#define FP_HIGH_DIST 0x3800
++#define FP_HIGH_PITCH 50.0f
++#define FP_HIGH_H 420
++#define FP_LOW_PIVOT 0x380
++#define FP_LOW_DIST 0x1600
++#define FP_LOW_PITCH 18.0f
++#define FP_LOW_H 384
++#define FP_FLOOR_BIAS 96        /* OT entries a floor sorts behind its centre (entities on it) */
++#define FP_SHADOW_BIAS (FP_FLOOR_BIAS - 6)
++#define FP_MAP_ARROW 1.0f       /* minimap pointer size: 1.0 = 0.8 of a tile long */
++#define FP_CEILING_SHADE 0x58   /* ceilings a little darker than the floor (0x7F) */
++#define FP_TURN_STEP 0x100      /* camera yaw per frame (as the beetle turns) */
++#define FP_TURN_EASE 0.2f       /* smooth turning: share of the way left covered per frame */
++#define FP_TURN_SNAP 6          /* smooth turning: closer than this (of 0x1000) it lands */
++#define FP_PACKET_BYTES 0x40000 /* the floor's own packet area per frame buffer */
++#define FP_MYSTERY_PCT 30       /* mystery encounters, "30 %" setting */
++#define FP_MYSTERY_PIX 0x140    /* one pixel of the ? glyph, world units (it is 7 tall) */
++#define FP_MYSTERY_HEIGHT 0x700 /* the ? floats this high (its middle) */
++#define FP_MAXV 12              /* vertices of a clipped polygon (4 + 5 planes, rounded up) */
++
++typedef struct {
++    float w[3]; /* world (FP origin) */
++    float c[3]; /* camera space */
++    float u, v; /* texel */
++    float shade;
++} Stg40FpVert;
++
++typedef struct {
++    float m[3][3]; /* GsWSMATRIX rotation (1.0 = 0x1000) */
++    float t[3];
++    float gx;      /* guard band, GTE units */
++    float gy;
++    float H;       /* projection */
++    float fog;     /* 0 none .. 1 full */
++    float fogStart; /* horizontal distance from the beetle where the fade starts */
++} Stg40FpView;
++
++/* A camera, as a pivot over the beetle (offset offX / offZ in world units, pivotH above the
++ * floor) and the eye dist back from it along the view direction; yaw in the heading
++ * convention (heading a looks along map (-sin a, cos a), world (-sin a, -cos a)), pitch down
++ * from the horizon, both in radians; H the projection; q the depth of a tile row against its
++ * width (the retail overhead view squashes rows to 0.8, the 3D views use 1); fog 0..1 and
++ * where it starts. */
++typedef struct {
++    float offX;
++    float offZ;
++    float pivotH;
++    float dist;
++    float yaw;
++    float pitch;
++    float H;
++    float q;
++    float fog;
++    float fogStart;
++} Stg40FpPose;
++
++#define FP_PI 3.14159265358979323846f
++
++/* The eye and the unit view direction of a pose (world: y down, floor at 0). */
++static void Stg40_FpPoseEye(const Stg40FpPose *p, float eye[3], float fwd[3]) {
++    float cp = cosf(p->pitch);
++
++    fwd[0] = -sinf(p->yaw) * cp;
++    fwd[1] = sinf(p->pitch);
++    fwd[2] = -cosf(p->yaw) * cp;
++    eye[0] = p->offX - fwd[0] * p->dist;
++    eye[1] = -p->pivotH - fwd[1] * p->dist;
++    eye[2] = p->offZ - fwd[2] * p->dist;
++}
++
++/* A pose from a world-to-camera matrix (rows: camera x, y, z axes in world, row 1 scaled by
++ * the aspect factor GsSetRefView2 puts in) and its translation: the eye solves m e = -t (the
++ * rows are orthogonal), the pivot is where the view ray meets the floor. */
++static void Stg40_FpPoseFromMatrix(const float m[3][3], const float t[3], float H, Stg40FpPose *p) {
++    float eye[3];
++    float f[3];
++    float n;
++    float s;
++    s32 i;
++    s32 j;
++
++    for (j = 0; j < 3; j++) {
++        eye[j] = 0.0f;
++    }
++    for (i = 0; i < 3; i++) {
++        n = m[i][0] * m[i][0] + m[i][1] * m[i][1] + m[i][2] * m[i][2];
++        if (n <= 0.0f) {
++            continue;
++        }
++        for (j = 0; j < 3; j++) {
++            eye[j] -= m[i][j] * t[i] / n;
++        }
++    }
++    n = sqrtf(m[2][0] * m[2][0] + m[2][1] * m[2][1] + m[2][2] * m[2][2]);
++    for (j = 0; j < 3; j++) {
++        f[j] = n > 0.0f ? m[2][j] / n : 0.0f;
++    }
++    p->yaw = atan2f(-f[0], -f[2]);
++    p->pitch = atan2f(f[1], sqrtf(f[0] * f[0] + f[2] * f[2]));
++    s = (f[1] > 0.05f && eye[1] < 0.0f) ? -eye[1] / f[1] : 0x2000; /* along the ray to the floor */
++    p->dist = s;
++    p->offX = eye[0] + f[0] * s;
++    p->offZ = eye[2] + f[2] * s;
++    p->pivotH = -(eye[1] + f[1] * s);
++    p->H = H;
++    p->q = 0.8f;
++    p->fog = 0.0f;
++    p->fogStart = FP_FOG_START_CHASE;
++}
++
++static float Stg40_FpEase(float t) {
++    t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
++    return t * t * (3.0f - 2.0f * t);
++}
++
++/* a to b at t (0..1, eased by the caller); the yaw the shorter way round. */
++static void Stg40_FpPoseBlend(const Stg40FpPose *a, const Stg40FpPose *b, float t, Stg40FpPose *o) {
++    float dy = b->yaw - a->yaw;
++
++    while (dy > FP_PI) {
++        dy -= 2.0f * FP_PI;
++    }
++    while (dy < -FP_PI) {
++        dy += 2.0f * FP_PI;
++    }
++#define FP_LERP(f) o->f = a->f + (b->f - a->f) * t
++    FP_LERP(offX);
++    FP_LERP(offZ);
++    FP_LERP(pivotH);
++    FP_LERP(dist);
++    FP_LERP(pitch);
++    FP_LERP(H);
++    FP_LERP(q);
++    FP_LERP(fog);
++    FP_LERP(fogStart);
++#undef FP_LERP
++    o->yaw = a->yaw + dy * t;
++}
++
++static void Stg40_FpToCamera(const Stg40FpView *c, Stg40FpVert *v) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        v->c[i] = c->t[i] + (c->m[i][0] * v->w[0] + c->m[i][1] * v->w[1] + c->m[i][2] * v->w[2]);
++    }
++}
++
++/* Distance of a camera-space point inside plane k (>= 0 inside). */
++static float Stg40_FpPlane(const Stg40FpView *c, const float *p, s32 k) {
++    switch (k) {
++    case 0:
++        return p[2] - FP_NEAR;
++    case 1:
++        return c->H * p[0] + c->gx * p[2];
++    case 2:
++        return c->gx * p[2] - c->H * p[0];
++    case 3:
++        return c->H * p[1] + c->gy * p[2];
++    default:
++        return c->gy * p[2] - c->H * p[1];
++    }
++}
++
++static void Stg40_FpLerp(Stg40FpVert *o, const Stg40FpVert *a, const Stg40FpVert *b, float t) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        o->w[i] = a->w[i] + (b->w[i] - a->w[i]) * t;
++        o->c[i] = a->c[i] + (b->c[i] - a->c[i]) * t;
++    }
++    o->u = a->u + (b->u - a->u) * t;
++    o->v = a->v + (b->v - a->v) * t;
++    o->shade = a->shade + (b->shade - a->shade) * t;
++}
++
++/* Sutherland-Hodgman against the near plane and the guard band. */
++static s32 Stg40_FpClip(const Stg40FpView *c, Stg40FpVert *v, s32 n) {
++    Stg40FpVert tmp[FP_MAXV];
++    float d[FP_MAXV];
++    s32 k;
++    s32 i;
++    s32 m;
++    s32 j;
++
++    for (k = 0; k < 5 && n >= 3; k++) {
++        s32 in = 0;
++
++        for (i = 0; i < n; i++) {
++            d[i] = Stg40_FpPlane(c, v[i].c, k);
++            in += d[i] >= 0.0f;
++        }
++        if (in == n) {
++            continue;
++        }
++        if (in == 0) {
++            return 0;
++        }
++        m = 0;
++        for (i = 0; i < n; i++) {
++            j = (i + 1) % n;
++            if (d[i] >= 0.0f && m < FP_MAXV) {
++                tmp[m++] = v[i];
++            }
++            if ((d[i] >= 0.0f) != (d[j] >= 0.0f) && m < FP_MAXV) {
++                Stg40_FpLerp(&tmp[m++], &v[i], &v[j], d[i] / (d[i] - d[j]));
++            }
++        }
++        for (i = 0; i < m; i++) {
++            v[i] = tmp[i];
++        }
++        n = m;
++    }
++    return n >= 3 ? n : 0;
++}
++
++static u8 Stg40_FpByte(float f) {
++    s32 i = (s32)lrintf(f);
++
++    return (u8)(i < 0 ? 0 : i > 255 ? 255 : i);
++}
++
++/* Brightness 0..1 of a world point by its horizontal distance from the beetle (the origin). */
++static float Stg40_FpFog(const Stg40FpView *c, const float *w) {
++    float d = sqrtf(w[0] * w[0] + w[2] * w[2]);
++    float f = (FP_FOG_END - d) / (FP_FOG_END - c->fogStart);
++
++    f = f < 0.0f ? 0.0f : f > 1.0f ? 1.0f : f;
++    return 1.0f - c->fog * (1.0f - f);
++}
++
++/* A quad in packet corner order (P0 P1 / P2 P3, as POLY_FT4) with its four texels uv[k],
++ * into v[] as a clipped convex polygon (loop P0 P1 P3 P2), shade faded by distance. Returns
++ * the vertex count, 0 = nothing to draw. cull: keep only the side retail Stg40_DrawTileWalls
++ * draws: it culls when cross(b0 - a0, b1 - a0) > 0 on screen, a negative area of the loop
++ * a1 b1 b0 a0 (= P0 P1 P3 P2). */
++static s32 Stg40_FpPrepQuad(const Stg40FpView *c, const float p[4][3], const float uv[4][2], s32 shade, s32 cull,
++                            Stg40FpVert *v) {
++    static const u8 loop[4] = { 0, 1, 3, 2 };
++    float area;
++    s32 n;
++    s32 i;
++    s32 k;
++
++    for (i = 0; i < 4; i++) {
++        k = loop[i];
++        v[i].w[0] = p[k][0];
++        v[i].w[1] = p[k][1];
++        v[i].w[2] = p[k][2];
++        v[i].u = uv[k][0];
++        v[i].v = uv[k][1];
++        Stg40_FpToCamera(c, &v[i]);
++        v[i].shade = shade * Stg40_FpFog(c, v[i].w);
++    }
++    n = Stg40_FpClip(c, v, 4);
++    if (n == 0 || !cull) {
++        return n;
++    }
++    area = 0.0f;
++    for (i = 0; i < n; i++) {
++        k = (i + 1) % n;
++        area += (v[i].c[0] / v[i].c[2]) * (v[k].c[1] / v[k].c[2]) -
++                (v[k].c[0] / v[k].c[2]) * (v[i].c[1] / v[i].c[2]);
++    }
++    return area < 0.0f ? 0 : n;
++}
++
++/* Floor template index of a map cell from its flags and its Rand_GetAt value, as
++ * Stg40_FillTileCache picks it. */
++static s32 Stg40_FpCellPrimFrom(u16 flags, u16 r) {
++    s32 k = flags & 0xF;
++    s32 a;
++
++    switch (k) {
++    case 0:
++        return 0;
++    case 1:
++    case 2:
++        a = k == 1 ? 0x18 : 0;
++        a += (flags >> 9) & 1;
++        if (flags & 0x80) {
++            a += 2;
++        }
++        if (flags & 0x800) {
++            a += 4;
++        }
++        if (r < 0x200) {
++            a += 8;
++        }
++        if (r < 0x400) {
++            a += 8;
++        }
++        if (r < 0x400) {
++            a |= 0x80;
++        }
++        return a;
++    default:
++        a = k + 0x2D;
++        if (r < 0x400) {
++            a |= 0x80;
++        }
++        return a;
++    }
++}
++
++/* Ring order around (pc, pr): ring 0 is the centre, ring r has 8r cells. */
++static void Stg40_FpRingCell(s32 pc, s32 pr, s32 ring, s32 i, s32 *col, s32 *row) {
++    if (ring == 0) {
++        *col = pc;
++        *row = pr;
++    } else if (i < 2 * ring) {
++        *col = pc - ring + i;
++        *row = pr - ring;
++    } else if (i < 4 * ring) {
++        *col = pc + ring;
++        *row = pr - ring + (i - 2 * ring);
++    } else if (i < 6 * ring) {
++        *col = pc + ring - (i - 4 * ring);
++        *row = pr + ring;
++    } else {
++        *col = pc - ring;
++        *row = pr + ring - (i - 6 * ring);
++    }
++}
++
++/* Subdivision of the quads: big polygons near the eye warp their textures when the PS1 maps
++ * them affine, so without precise (perspective-correct) geometry every floor is cut 2 x 2 and
++ * every wall 2 x 1 (pieces 0x500 square). One level for all cells: shared edges then split
++ * alike, so no T-junction opens a crack. With precise geometry (no wobble or smooth frames)
++ * the renderer corrects perspective itself and nothing is cut. */
++static s32 Stg40_FpSubdiv(s32 precise) {
++    return precise ? 1 : 2;
++}
++
++/* Piece (i, j) of nu x nv of a quad in packet corner order (P0 P1 / P2 P3), positions and
++ * texels interpolated bilinearly; i runs P0 -> P1, j runs P0 -> P2. */
++static void Stg40_FpSubQuad(const float p[4][3], const float uv[4][2], s32 i, s32 j, s32 nu, s32 nv, float sp[4][3],
++                            float suv[4][2]) {
++    s32 k;
++    s32 a;
++
++    for (k = 0; k < 4; k++) {
++        float s = (float)(i + (k & 1)) / nu;
++        float t = (float)(j + (k >> 1)) / nv;
++        float w0 = (1 - s) * (1 - t);
++        float w1 = s * (1 - t);
++        float w2 = (1 - s) * t;
++        float w3 = s * t;
++
++        for (a = 0; a < 3; a++) {
++            sp[k][a] = w0 * p[0][a] + w1 * p[1][a] + w2 * p[2][a] + w3 * p[3][a];
++        }
++        for (a = 0; a < 2; a++) {
++            suv[k][a] = w0 * uv[0][a] + w1 * uv[1][a] + w2 * uv[2][a] + w3 * uv[3][a];
++        }
++    }
++}
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+new file mode 100644
+index 0000000..81feb69
+--- /dev/null
++++ b/src/stag4000/fpview_native.inc
+@@ -0,0 +1,1607 @@
++/* FP: the 3D domain views (native build only): high chase, low chase, first person, and the
++ * camera moves between them and the classic view. Included by floor.c inside
++ * #ifdef DW2_NATIVE, so the matching PS1 build never sees it (and no build globs a .inc).
++ * Overview in include/stag4000/fpview.h; the pure geometry is in fpview_math.inc. */
++
++#include <math.h>
++#include <string.h>
++#include "stag4000/fpview.h"
++#include "fpview_math.inc"
++
++extern void Gfx_AnimateModelTex(Actor *a0);
++
++/* The floor's own packets, one area per frame buffer: a static array lies in the exe image,
++ * in the 16 MB window the 24-bit OT links reach (psyq/ps1mem.h), so the floor never takes
++ * room the game's models need in its packet buffer. */
++static u32 Stg40_FpPkt[2][FP_PACKET_BYTES / 4];
++static s32 Stg40_FpPktUsed;  /* bytes used in the area of Stg40_FpPktBuf this frame */
++static s32 Stg40_FpPktBuf = -1;
++static s32 Stg40_FpPktFrame;
++
++/* ---- state ------------------------------------------------------------------------------- */
++
++/* The view the host asks for (F4): 0 classic (the retail renderer), 1 high chase, 2 low chase,
++ * 3 first person. Any other view, and every transition, draws with this file's renderer. */
++enum { FP_VIEW_CLASSIC, FP_VIEW_HIGH, FP_VIEW_LOW, FP_VIEW_FIRST, FP_VIEW_COUNT };
++
++static s32 Stg40_FpSynced;  /* facing / yaw taken from the beetle */
++static void *Stg40_FpEnt;   /* the entity they were taken from */
++static s32 Stg40_FpFacing;  /* octant the view faces, 0..7 (retail octants: 0 down, 2 left ...) */
++static s32 Stg40_FpYaw;     /* camera yaw, 0..0xFFF, chases Stg40_FpFacing << 9 */
++static s32 Stg40_FpBodyYaw; /* the beetle's drawn rotation, 0..0xFFF (smooth turning) */
++
++static s32 Stg40_FpInit;    /* the state below is set up for this dungeon visit */
++static s32 Stg40_FpTo;      /* the view shown, or being moved to */
++static s32 Stg40_FpCtrl;    /* turn-and-move controls (switch when a transition ends) */
++static float Stg40_FpT;     /* transition 0..1 (1 = done) */
++static Stg40FpPose Stg40_FpFrom; /* where the transition started */
++static Stg40FpPose Stg40_FpCur;  /* the camera of this frame */
++static Stg40FpPose Stg40_FpClassic; /* the retail camera, read back each frame */
++static s32 Stg40_FpClassicOk;
++static float Stg40_FpEyeH;  /* eye height above the floor this frame */
++static float Stg40_FpEyeXZ; /* eye distance from the beetle across the floor this frame */
++
++/* The dungeon is rebuilt (a new floor, back from a battle, a menu): the camera snaps to the
++ * chosen view at its next use; no transition carries over. */
++void Stg40_FpReset(void) {
++    Stg40_FpSynced = 0;
++    Stg40_FpEnt = NULL;
++    Stg40_FpInit = 0;
++    Stg40_FpClassicOk = 0;
++}
++
++static s32 Stg40_FpReady(void) {
++    return Stg40_RootState != NULL && Stg40_RootState->playerEnt != NULL && Dung_StatePtr != NULL &&
++           Dung_StatePtr->floorHdr != NULL && Stg40_FloorWork != NULL;
++}
++
++static void Stg40_FpSync(Stg40Ent48 *e) {
++    if (Stg40_FpSynced && Stg40_FpEnt == e) {
++        return;
++    }
++    Stg40_FpFacing = ((u16)e->targetHeading >> 9) & 7;
++    Stg40_FpYaw = Stg40_FpFacing << 9;
++    Stg40_FpEnt = e;
++    Stg40_FpSynced = 1;
++}
++
++/* The camera of view `mode` this frame. */
++static void Stg40_FpLivePose(s32 mode, Stg40FpPose *p) {
++    float h = (float)Stg40_RootState->playerEnt->loc.height;
++
++    if (mode == FP_VIEW_CLASSIC) {
++        if (Stg40_FpClassicOk) {
++            *p = Stg40_FpClassic;
++        } else {
++            /* not read back yet (the first frame): a steep overhead stand-in */
++            p->offX = 0.0f;
++            p->offZ = 0.0f;
++            p->pivotH = 0.0f;
++            p->dist = 0x5000;
++            p->yaw = 0.0f;
++            p->pitch = 62.0f * FP_PI / 180.0f;
++            p->H = 512;
++            p->q = 0.8f;
++            p->fog = 0.0f;
++            p->fogStart = FP_FOG_START_CHASE;
++        }
++        return;
++    }
++    p->offX = 0.0f;
++    p->offZ = 0.0f;
++    p->yaw = Stg40_FpYaw * (2.0f * FP_PI / 4096.0f);
++    p->q = 1.0f;
++    p->fog = 1.0f;
++    p->fogStart = FP_FOG_START_CHASE;
++    switch (mode) {
++    case FP_VIEW_HIGH:
++        p->pivotH = FP_HIGH_PIVOT + h;
++        p->dist = FP_HIGH_DIST;
++        p->pitch = FP_HIGH_PITCH * FP_PI / 180.0f;
++        p->H = FP_HIGH_H;
++        break;
++    case FP_VIEW_LOW:
++        p->pivotH = FP_LOW_PIVOT + h;
++        p->dist = FP_LOW_DIST;
++        p->pitch = FP_LOW_PITCH * FP_PI / 180.0f;
++        p->H = FP_LOW_H;
++        break;
++    default:
++        p->pivotH = FP_EYE + h;
++        p->dist = 0.0f;
++        p->pitch = atan2f((float)FP_PITCH, 4096.0f);
++        p->H = FP_H;
++        p->fogStart = FP_FOG_START;
++        break;
++    }
++}
++
++/* Follows the host's view: set up on first use, a new transition when F4 picks another. */
++static s32 Stg40_FpPoll(void) {
++    s32 mode;
++
++    if (!Stg40_FpReady()) {
++        return 0;
++    }
++    mode = Host_FpView();
++    if (mode < 0 || mode >= FP_VIEW_COUNT) {
++        mode = FP_VIEW_CLASSIC;
++    }
++    if (!Stg40_FpInit) {
++        Stg40_FpInit = 1;
++        Stg40_FpTo = mode;
++        Stg40_FpT = 1.0f;
++        Stg40_FpCtrl = mode != FP_VIEW_CLASSIC;
++        Stg40_FpSync(Stg40_RootState->playerEnt);
++        Stg40_FpBodyYaw = (u16)Stg40_RootState->playerEnt->heading & 0xFFF;
++        Stg40_FpLivePose(mode, &Stg40_FpCur);
++        {
++            float eye[3];
++            float f[3];
++
++            Stg40_FpPoseEye(&Stg40_FpCur, eye, f);
++            Stg40_FpEyeH = -eye[1];
++            Stg40_FpEyeXZ = sqrtf(eye[0] * eye[0] + eye[2] * eye[2]);
++        }
++    } else if (mode != Stg40_FpTo) {
++        Stg40_FpFrom = Stg40_FpCur;
++        Stg40_FpTo = mode;
++        Stg40_FpT = 0.0f;
++    }
++    return 1;
++}
++
++s32 Stg40_FpActive(void) {
++    if (!Stg40_FpPoll()) {
++        return 0;
++    }
++    return Stg40_FpTo != FP_VIEW_CLASSIC || Stg40_FpT < 1.0f;
++}
++
++s32 Stg40_FpRelative(void) {
++    return Stg40_FpPoll() && Stg40_FpCtrl;
++}
++
++/* The origin of the 3D world: the player's (moving) map position. */
++static s32 Stg40_FpOriginX(void) {
++    return Stg40_RootState->playerEnt->loc.posX;
++}
++
++static s32 Stg40_FpOriginY(void) {
++    return Stg40_RootState->playerEnt->loc.posY;
++}
++
++s32 Stg40_FpWorldX(s32 posX) {
++    if (!Stg40_FpActive()) {
++        return (s16)((posX - Stg40_RootState->viewX) * 40);
++    }
++    return (s16)((posX - Stg40_FpOriginX()) * 40);
++}
++
++s32 Stg40_FpWorldZ(s32 posY) {
++    if (!Stg40_FpActive()) {
++        return (s16)-(((posY - Stg40_RootState->viewY) << 11) / 64);
++    }
++    return (s16)lrintf(-(posY - Stg40_FpOriginY()) * 40.0f * Stg40_FpCur.q);
++}
++
++s32 Stg40_FpOutOfRange(s32 posX, s32 posY) {
++    s32 dx;
++    s32 dy;
++
++    if (!Stg40_FpActive()) {
++        return 0;
++    }
++    dx = posX - Stg40_FpOriginX();
++    dy = posY - Stg40_FpOriginY();
++    return dx < -12 * 64 || dx > 12 * 64 || dy < -12 * 64 || dy > 12 * 64;
++}
++
++/* The eye is at (or close to) the beetle: first person, or a camera moving into it. */
++static s32 Stg40_FpInBeetle(void) {
++    return Stg40_FpActive() && Stg40_FpEyeXZ < FP_HIDE_DIST;
++}
++
++/* The rotation to draw an entity with: the beetle's eased one in the 3D views with smooth
++ * turning, else the game's. */
++s32 Stg40_FpDrawHeading(void *ent, s32 rot) {
++    if (Stg40_FpActive() && Host_FpSmoothTurn() && ent == (void *)Stg40_RootState->playerEnt) {
++        return Stg40_FpBodyYaw;
++    }
++    return rot;
++}
++
++/* angle *a (0..0xFFF) toward target: eased (smooth turning) or at most `step` a frame. */
++static void Stg40_FpTurnToward(s32 *a, s32 target, s32 smooth, s32 step) {
++    s32 d = ((target - *a + 0x800) & 0xFFF) - 0x800; /* shortest way, -0x800..0x7FF */
++    s32 m;
++
++    if (smooth) {
++        if (d <= FP_TURN_SNAP && d >= -FP_TURN_SNAP) {
++            m = d;
++        } else {
++            m = (s32)lrintf(d * FP_TURN_EASE);
++            if (m == 0) {
++                m = d > 0 ? 1 : -1;
++            }
++        }
++    } else {
++        m = d > step ? step : d < -step ? -step : d;
++    }
++    *a = (*a + m) & 0xFFF;
++}
++
++s32 Stg40_FpHidesEnt(void *ent) {
++    return Stg40_FpInBeetle() && ent == (void *)Stg40_RootState->playerEnt;
++}
++
++s32 Stg40_FpHidesActor(void *actor) {
++    return Stg40_FpInBeetle() && actor == (void *)Stg40_RootState->playerEnt->actor;
++}
++
++/* A hidden model's texture animation (eye blinks: Rand_Next, VRAM moves). Gfx_AnimateModelTex
++ * reads model->texSlot, which only Gfx_DrawTexModel sets: a model attached while FP is on (the
++ * beetle after a battle) has never been drawn, so set it here the way the draw does. */
++void Stg40_FpAnimateHiddenTex(void *actor) {
++    Actor *a0 = (Actor *)actor;
++    ActorModel *m = a0->model;
++
++    if (m == NULL) {
++        return;
++    }
++    m->texSlot = (struct GfxModelTexSlot *)Gfx_FindOrLoadTexSlot(m->fileId << 16);
++    Gfx_AnimateModelTex(a0);
++}
++
++/* ---- controls ---------------------------------------------------------------------------- */
++
++s32 Stg40_FpPadOctant(void *ent) {
++    Stg40Ent48 *e = (Stg40Ent48 *)ent;
++    s32 turn = 0;
++    s32 rel = 0;
++
++    Stg40_FpSync(e);
++    if (Pad_State[0].up == 0) {
++        /* Left / Right turn a quarter, Down turns around: on the press, not while held.
++         * Retail octants run 0 down, 2 left, 4 up, 6 right (clockwise on the map): facing up
++         * (4), the left hand points left (2), so left of facing is -2 */
++        if (Pad_State[0].left > 0) {
++            turn = -2;
++        } else if (Pad_State[0].right > 0) {
++            turn = 2;
++        } else if (Pad_State[0].down > 0) {
++            turn = 4;
++        }
++        Stg40_FpFacing = (Stg40_FpFacing + turn) & 7;
++        /* the beetle turns to the view (also back after a diagonal step) */
++        if ((u16)e->targetHeading != (u16)(Stg40_FpFacing << 9)) {
++            e->targetHeading = Stg40_FpFacing << 9;
++            e->octant = Stg40_FpFacing;
++        }
++        return -1;
++    }
++    if (Pad_State[0].left != 0) {
++        rel = -1;
++    } else if (Pad_State[0].right != 0) {
++        rel = 1;
++    }
++    return (Stg40_FpFacing + rel) & 7;
++}
++
++/* ---- camera ------------------------------------------------------------------------------ */
++
++/* Every camera frame, after the retail camera has set GsWSMATRIX (camera.c): read that camera
++ * back as the classic pose (in the 3D world: player-centred, rows 0.8 deep), move the facing
++ * and the transition on, and when a 3D view or a transition is up, set this frame's camera
++ * over the retail one. */
++void Stg40_FpCameraTick(void *cameraWork) {
++    Stg40CameraWork *w = (Stg40CameraWork *)cameraWork;
++    Stg40Ent48 *e;
++    Stg40FpPose live;
++    Stg40RView v;
++    Mat1F668 mtx;
++    float m[3][3];
++    float t[3];
++    float eye[3];
++    float f[3];
++    s32 target;
++    s32 smooth;
++    s32 i;
++
++    if (!Stg40_FpPoll()) {
++        return;
++    }
++    e = Stg40_RootState->playerEnt;
++
++    /* the retail camera, in the 3D world's terms */
++    mtx = GsWSMATRIX;
++    for (i = 0; i < 9; i++) {
++        m[i / 3][i % 3] = mtx.m[i / 3][i % 3] / 4096.0f;
++    }
++    for (i = 0; i < 3; i++) {
++        t[i] = (float)mtx.t[i];
++    }
++    Stg40_FpPoseFromMatrix((const float(*)[3])m, t, (float)w->view.words[6], &Stg40_FpClassic);
++    Stg40_FpClassic.offX += (Stg40_RootState->viewX - Stg40_FpOriginX()) * 40.0f;
++    Stg40_FpClassic.offZ -= (Stg40_RootState->viewY - Stg40_FpOriginY()) * 32.0f;
++    Stg40_FpClassicOk = 1;
++
++    /* the facing: the beetle's own with the retail controls, the view's with turn-and-move;
++     * the camera turns toward it, eased with smooth turning (the game's own heading and turn
++     * timing are not touched: only the camera and the beetle's drawn rotation ease) */
++    smooth = Host_FpSmoothTurn();
++    if (!Stg40_FpCtrl) {
++        Stg40_FpFacing = ((u16)e->targetHeading >> 9) & 7;
++        Stg40_FpEnt = e;
++        Stg40_FpSynced = 1;
++        target = (u16)e->heading & 0xFFF;
++        if (smooth && Stg40_FpActive()) {
++            Stg40_FpTurnToward(&Stg40_FpYaw, target, 1, 0);
++        } else {
++            Stg40_FpYaw = target;
++        }
++    } else {
++        Stg40_FpSync(e);
++        Stg40_FpTurnToward(&Stg40_FpYaw, Stg40_FpFacing << 9, smooth, FP_TURN_STEP);
++    }
++    Stg40_FpTurnToward(&Stg40_FpBodyYaw, (u16)e->heading & 0xFFF, smooth, 0x1000);
++
++    /* the transition; the controls change when it ends, never half way */
++    if (Stg40_FpT < 1.0f) {
++        Stg40_FpT += 1.0f / FP_BLEND_FRAMES;
++        if (Stg40_FpT >= 1.0f) {
++            s32 rel = Stg40_FpTo != FP_VIEW_CLASSIC;
++
++            Stg40_FpT = 1.0f;
++            if (rel && !Stg40_FpCtrl) {
++                Stg40_FpFacing &= 6; /* turn-and-move faces a side, not a diagonal */
++            }
++            Stg40_FpCtrl = rel;
++        }
++    }
++    Stg40_FpLivePose(Stg40_FpTo, &live);
++    if (Stg40_FpT < 1.0f) {
++        Stg40_FpPoseBlend(&Stg40_FpFrom, &live, Stg40_FpEase(Stg40_FpT), &Stg40_FpCur);
++    } else {
++        Stg40_FpCur = live;
++    }
++    Stg40_FpPoseEye(&Stg40_FpCur, eye, f);
++    Stg40_FpEyeH = -eye[1];
++    Stg40_FpEyeXZ = sqrtf(eye[0] * eye[0] + eye[2] * eye[2]);
++    if (!Stg40_FpActive()) {
++        return; /* classic: the retail camera stands */
++    }
++
++    /* the super coordinate: identity at the origin (the player) */
++    for (i = 0; i < 9; i++) {
++        w->coord.coord.m[i / 3][i % 3] = (i % 4 == 0) ? 0x1000 : 0;
++    }
++    w->coord.coord.t[0] = 0;
++    w->coord.coord.t[1] = 0;
++    w->coord.coord.t[2] = 0;
++    w->coord.flg = 0;
++    v.vpvr[0] = (s32)lrintf(eye[0]);
++    v.vpvr[1] = (s32)lrintf(eye[1]);
++    v.vpvr[2] = (s32)lrintf(eye[2]);
++    v.vpvr[3] = (s32)lrintf(eye[0] + f[0] * 0x1000);
++    v.vpvr[4] = (s32)lrintf(eye[1] + f[1] * 0x1000);
++    v.vpvr[5] = (s32)lrintf(eye[2] + f[2] * 0x1000);
++    v.rz = 0;
++    v.super = &w->coord;
++    GsSetProjection((s32)lrintf(Stg40_FpCur.H));
++    GsSetRefView2((void *)&v);
++}
++
++/* ---- floor ------------------------------------------------------------------------------- */
++
++/* POLY_GT3 (gouraud textured triangle), 0x28 bytes, 9 words after the tag. */
++typedef struct {
++    Stg40Tag tag;
++    u8 r0, g0, b0, code;
++    s16 x0, y0;
++    u8 u0, v0;
++    u16 clut;
++    u8 r1, g1, b1, p1;
++    s16 x1, y1;
++    u8 u1, v1;
++    u16 tpage;
++    u8 r2, g2, b2, p2;
++    s16 x2, y2;
++    u8 u2, v2;
++    u16 pad2;
++} Stg40FpGT3;
++
++typedef struct {
++    Stg40FpView view;
++    s32 shiftX; /* the game halves 640 x 480 GTE coordinates for its 320 x 240 screen */
++    s32 shiftY;
++    s32 shiftZ; /* OT index = otz >> shiftZ */
++    s32 maxOtz;
++    u8 *pkt;    /* packet cursor */
++    u8 *end;    /* end of this frame's area */
++    s32 full;
++    float q;    /* tile row depth against its width (Stg40FpPose.q) */
++} Stg40FpCtx;
++
++static s16 Stg40_FpS16(float f) {
++    return (s16)(f < -32767.0f ? -32767 : f > 32767.0f ? 32767 : lrintf(f));
++}
++
++/* One quad in packet corner order (P0 P1 / P2 P3, as POLY_FT4), textured from tpl, flat shade
++ * `shade` faded by distance; cull: draw only the side the retail wall test draws. otBias moves
++ * it back in the OT (entries). The clipped polygon goes through the GTE vertex by vertex (all
++ * in front of the near plane now, so the PGXP hook records their precise positions too) and
++ * out as a fan of POLY_GT3. */
++static void Stg40_FpQuad(Stg40FpCtx *c, const float p[4][3], const float uv[4][2], const Stg40FT4 *tpl, s32 shade,
++                         s32 cull, s32 otBias) {
++    Stg40FpVert v[FP_MAXV];
++    s32 sx[FP_MAXV];
++    s32 sy[FP_MAXV];
++    u32 *ot;
++    s32 otz;
++    s32 n;
++    s32 i;
++
++    if (c->full) {
++        return;
++    }
++    n = Stg40_FpPrepQuad(&c->view, p, uv, shade, cull, v);
++    if (n == 0) {
++        return;
++    }
++    otz = 0;
++    for (i = 0; i < n; i++) {
++        SVECTOR sv;
++        int sxy = 0;
++        int dummy = 0;
++        int flag = 0;
++
++        sv.vx = Stg40_FpS16(v[i].w[0]);
++        sv.vy = Stg40_FpS16(v[i].w[1]);
++        sv.vz = Stg40_FpS16(v[i].w[2]);
++        sv.pad = 0;
++        otz += RotTransPers(&sv, &sxy, &dummy, &flag);
++        sx[i] = (s16)(sxy & 0xFFFF) >> c->shiftX;
++        sy[i] = (s16)((u32)sxy >> 16) >> c->shiftY;
++    }
++    otz = (otz / n >> c->shiftZ) + otBias;
++    if (otz < 1) {
++        otz = 1;
++    } else if (otz > c->maxOtz) {
++        otz = c->maxOtz;
++    }
++    ot = &Sys_State.otLayers.u[3][otz];
++    for (i = 1; i + 1 < n; i++) {
++        Stg40FpGT3 *g = (Stg40FpGT3 *)c->pkt;
++        s32 k[3];
++        s32 j;
++
++        if (c->pkt + sizeof(Stg40FpGT3) > c->end) {
++            c->full = 1;
++            return;
++        }
++        k[0] = 0;
++        k[1] = i;
++        k[2] = i + 1;
++        g->tag.word = 0;
++        g->tag.b.len = 9;
++        g->code = 0x34 | (tpl->code & 2);
++        g->clut = tpl->clut;
++        g->tpage = tpl->tpage;
++        g->p1 = 0;
++        g->p2 = 0;
++        g->pad2 = 0;
++        for (j = 0; j < 3; j++) {
++            Stg40FpVert *q = &v[k[j]];
++            u8 s = Stg40_FpByte(q->shade);
++            s16 x = sx[k[j]];
++            s16 y = sy[k[j]];
++            u8 tu = Stg40_FpByte(q->u);
++            u8 tv = Stg40_FpByte(q->v);
++
++            if (j == 0) {
++                g->r0 = g->g0 = g->b0 = s;
++                g->x0 = x;
++                g->y0 = y;
++                g->u0 = tu;
++                g->v0 = tv;
++            } else if (j == 1) {
++                g->r1 = g->g1 = g->b1 = s;
++                g->x1 = x;
++                g->y1 = y;
++                g->u1 = tu;
++                g->v1 = tv;
++            } else {
++                g->r2 = g->g2 = g->b2 = s;
++                g->x2 = x;
++                g->y2 = y;
++                g->u2 = tu;
++                g->v2 = tv;
++            }
++        }
++        g->tag.word = (g->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++        *ot = (*ot & 0xFF000000) | ((u32)(uintptr_t)c->pkt & 0xFFFFFF);
++        c->pkt += sizeof(Stg40FpGT3);
++    }
++}
++
++/* The template's four texels as floats. */
++static void Stg40_FpTplUv(const Stg40FT4 *tpl, float uv[4][2]) {
++    uv[0][0] = tpl->u0;
++    uv[0][1] = tpl->v0;
++    uv[1][0] = tpl->u1;
++    uv[1][1] = tpl->v1;
++    uv[2][0] = tpl->u2;
++    uv[2][1] = tpl->v2;
++    uv[3][0] = tpl->u3;
++    uv[3][1] = tpl->v3;
++}
++
++/* Stg40_FpQuad in nu x nv pieces. */
++static void Stg40_FpQuadN(Stg40FpCtx *c, const float p[4][3], const Stg40FT4 *tpl, s32 shade, s32 cull, s32 otBias,
++                          s32 nu, s32 nv) {
++    float uv[4][2];
++    float sp[4][3];
++    float suv[4][2];
++    s32 i;
++    s32 j;
++
++    Stg40_FpTplUv(tpl, uv);
++    for (j = 0; j < nv; j++) {
++        for (i = 0; i < nu; i++) {
++            Stg40_FpSubQuad(p, (const float(*)[2])uv, i, j, nu, nv, sp, suv);
++            Stg40_FpQuad(c, (const float(*)[3])sp, (const float(*)[2])suv, tpl, shade, cull, otBias);
++        }
++    }
++}
++
++/* POLY_F3 (flat triangle), 0x14 bytes, 4 words after the tag. */
++typedef struct {
++    Stg40Tag tag;
++    u8 r0, g0, b0, code;
++    s16 x0, y0;
++    s16 x1, y1;
++    s16 x2, y2;
++} Stg40FpF3;
++
++/* A black quad (the retail tops of solid cells, Stg40_DrawTileTop with no flags), clipped like
++ * the others and sent as a POLY_F3 fan. */
++static void Stg40_FpQuadBlack(Stg40FpCtx *c, const float p[4][3]) {
++    static const float uv[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
++    Stg40FpVert v[FP_MAXV];
++    s32 sx[FP_MAXV];
++    s32 sy[FP_MAXV];
++    u32 *ot;
++    s32 otz;
++    s32 n;
++    s32 i;
++
++    if (c->full) {
++        return;
++    }
++    n = Stg40_FpPrepQuad(&c->view, p, uv, 0, 0, v);
++    if (n == 0) {
++        return;
++    }
++    otz = 0;
++    for (i = 0; i < n; i++) {
++        SVECTOR sv;
++        int sxy = 0;
++        int dummy = 0;
++        int flag = 0;
++
++        sv.vx = Stg40_FpS16(v[i].w[0]);
++        sv.vy = Stg40_FpS16(v[i].w[1]);
++        sv.vz = Stg40_FpS16(v[i].w[2]);
++        sv.pad = 0;
++        otz += RotTransPers(&sv, &sxy, &dummy, &flag);
++        sx[i] = (s16)(sxy & 0xFFFF) >> c->shiftX;
++        sy[i] = (s16)((u32)sxy >> 16) >> c->shiftY;
++    }
++    otz = otz / n >> c->shiftZ;
++    if (otz < 1) {
++        otz = 1;
++    } else if (otz > c->maxOtz) {
++        otz = c->maxOtz;
++    }
++    ot = &Sys_State.otLayers.u[3][otz];
++    for (i = 1; i + 1 < n; i++) {
++        Stg40FpF3 *t = (Stg40FpF3 *)c->pkt;
++
++        if (c->pkt + sizeof(Stg40FpF3) > c->end) {
++            c->full = 1;
++            return;
++        }
++        t->tag.word = 0;
++        t->tag.b.len = 4;
++        t->code = 0x20;
++        t->r0 = 0;
++        t->g0 = 0;
++        t->b0 = 0;
++        t->x0 = sx[0];
++        t->y0 = sy[0];
++        t->x1 = sx[i];
++        t->y1 = sy[i];
++        t->x2 = sx[i + 1];
++        t->y2 = sy[i + 1];
++        t->tag.word = (t->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++        *ot = (*ot & 0xFF000000) | ((u32)(uintptr_t)c->pkt & 0xFFFFFF);
++        c->pkt += sizeof(Stg40FpF3);
++    }
++}
++
++/* Loads GsWSMATRIX into the GTE (PushMatrix; Stg40_FpEnd pops). 0 = no packet room. */
++static s32 Stg40_FpBegin(Stg40FpCtx *c) {
++    Mat1F668 mtx = GsWSMATRIX;
++    s32 margin;
++    s32 buf = Sys_State.bufIndex & 1;
++    s32 i;
++    s32 j;
++
++    if (buf != Stg40_FpPktBuf || Sys_State.frameCount != Stg40_FpPktFrame) {
++        Stg40_FpPktBuf = buf;
++        Stg40_FpPktFrame = Sys_State.frameCount;
++        Stg40_FpPktUsed = 0;
++    }
++
++    for (i = 0; i < 3; i++) {
++        for (j = 0; j < 3; j++) {
++            c->view.m[i][j] = mtx.m[i][j] / 4096.0f;
++        }
++        c->view.t[i] = (float)mtx.t[i];
++    }
++    c->shiftX = Sys_State.centerX.s != 0x140;
++    c->shiftY = Sys_State.centerY.s != 0xF0;
++    c->shiftZ = Sys_State.otLayerLen[3] - 2;
++    c->maxOtz = 0x3FFF >> c->shiftZ;
++    margin = Host_WideMargin(Sys_State.centerX.s * 2);
++    c->view.gx = (float)((Sys_State.centerX.s + margin) << c->shiftX) * FP_GUARD;
++    c->view.gy = (float)(Sys_State.centerY.s << c->shiftY) * FP_GUARD;
++    c->view.H = Stg40_FpCur.H;
++    c->view.fog = Stg40_FpCur.fog;
++    c->view.fogStart = Stg40_FpCur.fogStart;
++    c->q = Stg40_FpCur.q;
++    c->pkt = (u8 *)Stg40_FpPkt[buf] + Stg40_FpPktUsed;
++    c->end = (u8 *)Stg40_FpPkt[buf] + FP_PACKET_BYTES;
++    c->full = c->pkt + sizeof(Stg40FpGT3) > c->end;
++    PushMatrix();
++    SetRotMatrix((void *)&mtx);
++    SetTransMatrix((void *)&mtx);
++    return !c->full;
++}
++
++static void Stg40_FpEnd(Stg40FpCtx *c) {
++    PopMatrix();
++    Stg40_FpPktUsed = (s32)(c->pkt - (u8 *)Stg40_FpPkt[Stg40_FpPktBuf]);
++}
++
++static void Stg40_FpDrawCell(Stg40FpCtx *c, Stg40FloorWork *w, s32 mapCol, s32 mapRow, s32 ox, s32 oy,
++                             s32 step, s32 sub) {
++    Stg40FloorHeader *hdr = Dung_StatePtr->floorHdr;
++    Stg40Cell *cell = &((Stg40Cell *)Dung_StatePtr->cells)[mapRow * hdr->cols + mapCol];
++    u16 flags = cell->flags;
++    s32 prim = Stg40_FpCellPrimFrom(flags, Rand_GetAt(mapCol + (mapRow << 6)));
++    float cx = (float)((mapCol * 64 - ox) * 40);
++    float cz = -(mapRow * 64 - oy) * 40.0f * c->q;
++    float xs[2];
++    float zs[2];
++    float p[4][3];
++    s32 i;
++
++    xs[0] = cx - FP_HALF; /* left, right */
++    xs[1] = cx + FP_HALF;
++    zs[0] = cz + FP_HALF * c->q; /* top (map row above), bottom */
++    zs[1] = cz - FP_HALF * c->q;
++    if (flags == 0) {
++        /* a solid cell: black at the wall tops, as retail draws it, when the eye is above
++         * them (from there it hides what lies behind the rock) */
++        if (step < 0 && Stg40_FpEyeH > FP_WALL) {
++            for (i = 0; i < 4; i++) {
++                p[i][0] = xs[i & 1];
++                p[i][1] = (float)step;
++                p[i][2] = zs[i >> 1];
++            }
++            Stg40_FpQuadBlack(c, (const float(*)[3])p);
++        }
++        return;
++    }
++    {
++        /* P0 top-left, P1 top-right, P2 bottom-left, P3 bottom-right, as Stg40_DrawTileTop */
++        for (i = 0; i < 4; i++) {
++            p[i][0] = xs[i & 1];
++            p[i][1] = 0.0f;
++            p[i][2] = zs[i >> 1];
++        }
++        Stg40_FpQuadN(c, (const float(*)[3])p, &w->prims[Stg40_FloorPrimIdx[prim & 0x7F]], 0x7F, 0,
++                      FP_FLOOR_BIAS, sub, sub);
++        /* ceiling: the same tile's floor texture at the wall tops, on floors whose walls go
++         * up (step < 0), only with the eye below them; platform floors have no walls above */
++        if (Host_FpCeiling() && step < 0 && Stg40_FpEyeH < FP_WALL - 0x80) {
++            for (i = 0; i < 4; i++) {
++                p[i][1] = (float)step;
++            }
++            Stg40_FpQuadN(c, (const float(*)[3])p, &w->prims[Stg40_FloorPrimIdx[prim & 0x7F]], FP_CEILING_SHADE, 0,
++                          FP_FLOOR_BIAS, sub, sub);
++        }
++    }
++    if (flags & 0xF00) {
++        const u8 *base = &Stg40_WallPrimIdx[(u16)hdr->wallStyle * 5];
++
++        for (i = 0; i < 4; i++) {
++            Stg40WallSide *rec = &Stg40_WallSides[i];
++            s32 k;
++
++            if ((flags & rec->wallMask) == 0) {
++                continue;
++            }
++            k = (cell->wallBits >> rec->wallBitShift) & 3;
++            if (k == 0 && (prim & 0x80)) {
++                k = 4;
++            }
++            /* as Stg40_DrawTileWalls: P0 a high, P1 b high, P2 a low, P3 b low ("high" is the
++             * second level, y = step) */
++            p[0][0] = xs[rec->ax];
++            p[0][1] = (float)step;
++            p[0][2] = zs[rec->ay];
++            p[1][0] = xs[rec->bx];
++            p[1][1] = (float)step;
++            p[1][2] = zs[rec->by];
++            p[2][0] = xs[rec->ax];
++            p[2][1] = 0.0f;
++            p[2][2] = zs[rec->ay];
++            p[3][0] = xs[rec->bx];
++            p[3][1] = 0.0f;
++            p[3][2] = zs[rec->by];
++            Stg40_FpQuadN(c, (const float(*)[3])p, &w->prims[base[k]], rec->shade, 1, 0, sub,
++                          1); /* walls are half a tile high */
++        }
++    }
++}
++
++void Stg40_FpDrawFloor(void *floorWork) {
++    Stg40FloorWork *w = (Stg40FloorWork *)floorWork;
++    Stg40FloorHeader *hdr = Dung_StatePtr->floorHdr;
++    Stg40FpCtx c;
++    s32 ox = Stg40_FpOriginX();
++    s32 oy = Stg40_FpOriginY();
++    s32 pc = (ox + 32) >> 6;
++    s32 pr = (oy + 32) >> 6;
++    s32 step = hdr->field_4 != 0 ? -0x500 : 0x500;
++    s32 sub = Stg40_FpSubdiv(Host_PreciseGeometry());
++    s32 ring;
++    s32 i;
++
++    if (!Stg40_FpBegin(&c)) {
++        PopMatrix();
++        return;
++    }
++    /* nearest cells first, so a full packet buffer drops the far ones */
++    for (ring = 0; ring <= STG40_FP_RADIUS && !c.full; ring++) {
++        s32 n = ring == 0 ? 1 : ring * 8;
++
++        for (i = 0; i < n && !c.full; i++) {
++            s32 col;
++            s32 row;
++            Stg40FpVert t;
++
++            Stg40_FpRingCell(pc, pr, ring, i, &col, &row);
++            if (col < 0 || row < 0 || col >= hdr->cols || row >= hdr->rows) {
++                continue;
++            }
++            /* cells wholly behind the eye or past the fog */
++            t.w[0] = (float)((col * 64 - ox) * 40);
++            t.w[1] = 0.0f;
++            t.w[2] = -(row * 64 - oy) * 40.0f * c.q;
++            Stg40_FpToCamera(&c.view, &t);
++            if (t.c[2] < -FP_TILE * 0.75f) {
++                continue;
++            }
++            if (c.view.fog > 0.999f && sqrtf(t.w[0] * t.w[0] + t.w[2] * t.w[2]) > FP_FOG_END + FP_TILE) {
++                continue;
++            }
++            Stg40_FpDrawCell(&c, w, col, row, ox, oy, step, sub);
++        }
++    }
++    Stg40_FpEnd(&c);
++}
++
++void Stg40_FpDrawShadow(void *locp) {
++    Stg40Loc *loc = (Stg40Loc *)locp;
++    Stg40FpCtx c;
++    s32 dx = loc->posX - Stg40_FpOriginX();
++    s32 dy = loc->posY - Stg40_FpOriginY();
++    float x = (float)(dx * 40);
++    float z = -dy * 40.0f * Stg40_FpCur.q;
++    float p[4][3];
++    s32 i;
++
++    if (dx > STG40_FP_RADIUS * 64 || -dx > STG40_FP_RADIUS * 64 || dy > STG40_FP_RADIUS * 64 ||
++        -dy > STG40_FP_RADIUS * 64) {
++        return;
++    }
++    if (!Stg40_FpBegin(&c)) {
++        PopMatrix();
++        return;
++    }
++    /* Stg40_ShadowCorners: x +-0x500, z +-0x400 on the retail 0x800 rows (q 0.8) */
++    for (i = 0; i < 4; i++) {
++        p[i][0] = x + Stg40_ShadowCorners.v[i * 2];
++        p[i][1] = -8.0f;
++        p[i][2] = z + Stg40_ShadowCorners.v[i * 2 + 1] * (Stg40_FpCur.q / 0.8f);
++    }
++    Stg40_FpQuadN(&c, (const float(*)[3])p, &Stg40_FloorWork->prims[Stg40_ShadowPrimIdx], 0x7F, 0,
++                  FP_SHADOW_BIAS, 1, 1);
++    Stg40_FpEnd(&c);
++}
++
++/* ---- minimap arrow ----------------------------------------------------------------------- */
++
++static void Stg40_FpMapTri(s32 *ot, const float *pts, u8 r, u8 g, u8 b) {
++    Stg40FpF3 *t = (Stg40FpF3 *)(sptr)Sys_State.packet.addr;
++
++    t->tag.word = 0;
++    t->tag.b.len = 4;
++    t->code = 0x20;
++    t->r0 = r;
++    t->g0 = g;
++    t->b0 = b;
++    t->x0 = (s16)lrintf(pts[0]);
++    t->y0 = (s16)lrintf(pts[1]);
++    t->x1 = (s16)lrintf(pts[2]);
++    t->y1 = (s16)lrintf(pts[3]);
++    t->x2 = (s16)lrintf(pts[4]);
++    t->y2 = (s16)lrintf(pts[5]);
++    t->tag.word = (t->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++    *ot = (*ot & 0xFF000000) | ((s32)(sptr)t & 0xFFFFFF);
++    Sys_State.packet.addr = (s32)(sptr)(t + 1);
++}
++
++/* The beetle's facing on the automap window Stg40_AutomapDrawWindow draws at x, y around cell
++ * (cx, cy) with `scale` pixels per cell: a small pointer on the beetle's marker square. Called before that
++ * window links its quads into the same OT entry, so it draws over them (an entry draws its
++ * packets newest first). A cell's texel is col + 4 (pix rows start one halfword in) and the
++ * window shows texel left + 3 at x + (left - cx) * scale, so cell col sits at
++ * x + (col + 1 - cx) * scale, row at y + (row + 1 - cy) * scale. */
++void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
++    Stg40Loc *loc = Dung_StatePtr->playerLoc;
++    s32 *ot = Sys_State.otLayers.s[1];
++    float sx;
++    float sy;
++    float a;
++    float dx;
++    float dy;
++    float px;
++    float py;
++    float pts[6];
++    float k;
++
++    if (!Stg40_FpRelative() || loc == NULL || fade <= 0) {
++        return; /* the pointer shows in the views that turn with the beetle */
++    }
++    Stg40_FpSync(Stg40_RootState->playerEnt);
++    sx = x + (loc->posX / 64.0f + 1.5f - cx) * scale;
++    sy = y + (loc->posY / 64.0f + 1.5f - cy) * scale;
++    a = Stg40_FpYaw * (float)(2.0 * 3.14159265358979323846 / 4096.0);
++    dx = -sinf(a); /* map direction of the view (x right, y down, as on screen) */
++    dy = cosf(a);
++    px = -dy;      /* perpendicular */
++    py = dx;
++    /* a pointer on the side of the game's own marker square the view faces: its base half a
++     * cell out (on the edge facing straight; just inside the corner facing diagonally), its tip
++     * 0.8 * FP_MAP_ARROW cells beyond. The square itself is left as the game draws it. */
++    k = FP_MAP_ARROW * scale;
++    {
++        float bx = sx + dx * 0.5f * scale;
++        float by = sy + dy * 0.5f * scale;
++
++        pts[0] = bx + dx * 0.8f * k;
++        pts[1] = by + dy * 0.8f * k;
++        pts[2] = bx + px * 0.45f * k;
++        pts[3] = by + py * 0.45f * k;
++        pts[4] = bx - px * 0.45f * k;
++        pts[5] = by - py * 0.45f * k;
++    }
++    Stg40_FpMapTri(ot, pts, (u8)(0xF0 * fade / 0xFF), (u8)(0xF0 * fade / 0xFF), (u8)(0xF0 * fade / 0xFF));
++}
++
++/* ---- mystery encounters ------------------------------------------------------------------ */
++
++/* Notes kept in host memory (they survive the overlay reload after a battle): note i for enemy
++ * party i = FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | its pick (1-based index into the
++ * floor's enemySets) << FP_NOTE_PICK_SHIFT | roll 0..99; note 15 = the floor's chosen party
++ * (FP_NOTE_VALID | index), or 0 for none. */
++#define FP_NOTE_VALID 0x200
++#define FP_NOTE_BOSS 0x100
++#define FP_NOTE_PICK_SHIFT 10
++#define FP_NOTE_SWAPPED 0x4000
++#define FP_NOTE_PARTIES 10   /* notes 0..9: the floor's enemy parties (at most 10) */
++#define FP_NOTE_WON 12       /* set by the battle stage when a battle is won (stag3000) */
++#define FP_NOTE_BATTLE 13    /* the party of the battle under way: FP_NOTE_VALID | index, mystery */
++#define FP_NOTE_BATTLE_MYST 0x400
++#define FP_NOTE_ROLLED 11    /* the floor's chests already rolled for a LvlLimitBoostr (bit mask) */
++#define FP_NOTE_CHEST 14     /* the floor's chests holding a LvlLimitBoostr (bit mask) */
++#define FP_NOTE_CHOSEN 15
++
++/* Stg40_SpawnEnemyParties, per party: its boss flag, its pick, a roll from the mod's own
++ * generator. */
++void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick) {
++    Host_FpSetNote(index, FP_NOTE_VALID | (boss ? FP_NOTE_BOSS : 0) | ((pick & 0xF) << FP_NOTE_PICK_SHIFT) |
++                              (s32)(Host_FpRandom() % 100));
++}
++
++/* Whether party idx shows as a ? under setting `mode` (its notes). */
++static s32 Stg40_FpMysteryIdx(s32 idx, s32 mode) {
++    s32 v;
++
++    if (mode == 0 || idx < 0 || idx >= FP_NOTE_PARTIES || Dung_StatePtr == NULL || idx >= Dung_StatePtr->partyCount) {
++        return 0;
++    }
++    v = Host_FpGetNote(idx);
++    if (!(v & FP_NOTE_VALID) || (v & FP_NOTE_BOSS)) {
++        return 0;
++    }
++    switch (mode) {
++    case 1:
++        return Host_FpGetNote(FP_NOTE_CHOSEN) == (FP_NOTE_VALID | idx);
++    case 2:
++        return (v & 0xFF) < FP_MYSTERY_PCT;
++    default:
++        return 1;
++    }
++}
++
++/* The enemy set id of a 1-based pick on this floor, 0 when the floor has none there, or it is
++ * not in the set file, or it is a boss fight. */
++static s32 Stg40_FpUsableSet(s32 pick) {
++    Stg40DungFloor *floor = (Stg40DungFloor *)(sptr)Stg40_RootState->floorMap; /* as spawn.c reads it */
++    Out1DB68 out;
++    s32 id;
++
++    if (pick < 1 || pick > 4 || floor == NULL) {
++        return 0;
++    }
++    id = floor->enemySets[pick];
++    if (id == 0 || Cd_GetFileOrNull(0xC6F) == 0 || Enemy_FindSetById(id) == NULL) {
++        return 0;
++    }
++    Enemy_GetSetSummary((void *)(sptr)id, &out);
++    return out.isBossFight ? 0 : id;
++}
++
++/* Party idx (a ? when rarer sets are on) becomes one of the floor's less common sets: every
++ * spawn point of every layout of the floor lists four picks, so a pick listed fewer times
++ * turns up less often. Only sets the floor really uses (listed somewhere) and strictly rarer
++ * than the party's own, weighted toward the rarest (1 / count); none: it stays. The party and
++ * its entity are filled in as Stg40_SpawnEnemyParties fills a new one. */
++static void Stg40_FpSwapRarer(s32 idx) {
++    Stg40DungFloor *floor = (Stg40DungFloor *)(sptr)Stg40_RootState->floorMap; /* as spawn.c reads it */
++    Stg40Drop *r;
++    Stg40EnemyParty *s = (Stg40EnemyParty *)Dung_StatePtr->parties[idx];
++    Stg40Ent48 *e = NULL;
++    Out1DB68 out;
++    s32 note = Host_FpGetNote(idx);
++    s32 cur = (note >> FP_NOTE_PICK_SHIFT) & 0xF;
++    s32 cnt[16];
++    float w[5];
++    float total = 0.0f;
++    float x;
++    s32 id;
++    s32 k;
++    s32 i;
++    s32 m;
++
++    if (floor == NULL) {
++        return;
++    }
++    for (k = 0; k < 16; k++) {
++        cnt[k] = 0;
++    }
++    for (i = 0; i < 8; i++) {
++        Stg40DungLayout *lay;
++
++        if (floor->layouts[i] == 0) {
++            continue;
++        }
++        lay = P32(Stg40DungLayout, floor->layouts[i]);
++        if (lay->enemyParties == 0) {
++            continue;
++        }
++        for (r = P32(Stg40Drop, lay->enemyParties); r->x != 0xFF; r++) {
++            cnt[r->pick0]++;
++            cnt[r->pick1]++;
++            cnt[r->pick2]++;
++            cnt[r->pick3]++;
++        }
++    }
++    if (cur < 1 || cur > 4) {
++        return;
++    }
++    for (k = 1; k <= 4; k++) {
++        w[k] = 0.0f;
++        if (k == cur || cnt[k] == 0 || cnt[k] >= cnt[cur] || Stg40_FpUsableSet(k) == 0 ||
++            Stg40_FpUsableSet(k) == s->setId) {
++            continue;
++        }
++        w[k] = 1.0f / cnt[k];
++        total += w[k];
++    }
++    if (total <= 0.0f) {
++        return;
++    }
++    x = (Host_FpRandom() % 10000) / 10000.0f * total;
++    for (k = 1; k < 4 && x >= w[k]; k++) {
++        x -= w[k];
++    }
++    while (k > 1 && w[k] <= 0.0f) {
++        k--; /* rounding landed past the last weighted pick */
++    }
++    if (w[k] <= 0.0f) {
++        return;
++    }
++    id = Stg40_FpUsableSet(k);
++    for (i = 0; i < Dung_StatePtr->entCount; i++) {
++        if (Dung_StatePtr->ents[i].kind == 1 && Dung_StatePtr->ents[i].params == (u8 *)s) {
++            e = &Dung_StatePtr->ents[i];
++            break;
++        }
++    }
++    if (e == NULL) {
++        return;
++    }
++    Enemy_GetSetSummary((void *)(sptr)id, &out);
++    e->digiId = out.mapDigiId;
++    if (e->digiId >= 500 && e->digiId <= 532) {
++        e->scaleX = e->scaleY = e->scaleZ = 0xD99;
++    } else {
++        e->scaleX = e->scaleY = e->scaleZ = 0x1000;
++    }
++    s->setId = id;
++    s->useDungeonBgm = out.useDungeonBgm != 0;
++    s->likedGift = out.likedGift;
++    s->pointsPerLevel = out.pointsPerLevel != 0 ? out.pointsPerLevel : 1;
++    s->giftsTaken = 0;
++    s->giftPoints = 0;
++    s->stepsPerBurst = Stg40_EnemyPaceTable[out.paceType * 2];
++    s->idleTicks = Stg40_EnemyPaceTable[out.paceType * 2 + 1];
++    s->cellCode = Stg40_EnemyAiTable[out.aiType * 2];
++    m = s->pathMode = Stg40_EnemyAiTable[out.aiType * 2 + 1];
++    if (m == 2 && s->cellCode != (Stg40_GetCellFlags(e->loc.u0.pair.field_0, e->loc.u0.pair.field_2) & 0xF)) {
++        s->cellCode = m;
++        s->pathMode = 0;
++    }
++    s->digiCount = 0;
++    for (i = 0; i < 3; i++) {
++        if ((s16)out.digiIds[i] == 0) {
++            break;
++        }
++        s->digiIds[i] = out.digiIds[i];
++        s->levels[i] = out.levels[i];
++        s->digiCount++;
++    }
++    Host_FpSetNote(idx, (note & ~(0xF << FP_NOTE_PICK_SHIFT)) | (k << FP_NOTE_PICK_SHIFT) | FP_NOTE_SWAPPED);
++}
++
++/* Stg40_SpawnEnemyParties, at the end: clears notes of unused slots, picks the floor's one
++ * mystery party among those that are not bosses, and (rarer sets on) swaps each party that
++ * will show as a ? under the current setting for a rarer set of the floor. */
++void Stg40_FpRollMystery(void) {
++    s32 n = Dung_StatePtr->partyCount;
++    s32 mode = Host_FpMystery();
++    s32 pick[16];
++    s32 count = 0;
++    s32 i;
++
++    for (i = 0; i < FP_NOTE_PARTIES; i++) {
++        s32 v = Host_FpGetNote(i);
++
++        if (i >= n) {
++            Host_FpSetNote(i, 0);
++        } else if ((v & FP_NOTE_VALID) && !(v & FP_NOTE_BOSS)) {
++            pick[count++] = i;
++        }
++    }
++    Host_FpSetNote(FP_NOTE_CHOSEN, count != 0 ? FP_NOTE_VALID | pick[Host_FpRandom() % count] : 0);
++    if (mode != 0 && Host_FpMysteryRare()) {
++        for (i = 0; i < n && i < FP_NOTE_PARTIES; i++) {
++            if (Stg40_FpMysteryIdx(i, mode)) {
++                Stg40_FpSwapRarer(i);
++            }
++        }
++    }
++}
++
++/* The entity is a wandering enemy party shown as a ? (the F1 setting, its notes). */
++s32 Stg40_FpMystery(void *ent) {
++    Stg40Ent48 *e = (Stg40Ent48 *)ent;
++    sptr off;
++
++    if (Host_FpMystery() == 0 || e == NULL || e->kind != 1 || e->params == NULL || Dung_StatePtr == NULL) {
++        return 0;
++    }
++    off = (sptr)e->params - (sptr)Dung_StatePtr->parties[0];
++    if (off < 0 || off % (sptr)sizeof(Dung_StatePtr->parties[0]) != 0) {
++        return 0;
++    }
++    return Stg40_FpMysteryIdx((s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0])), Host_FpMystery());
++}
++
++/* ---- LvlLimitBoostr ---------------------------------------------------------------------- */
++
++/* A one-use item, never kept in the bag (so saves stay readable by the official port): found,
++ * it asks at once which party Digimon gets +1 to its level limit, or None. Usable on a
++ * Digimon at its limit whose limit is below 99. Found (F1 checkboxes, on by default) in 1 % of
++ * all chests, rolled the first time each is opened (None leaves it in the chest, which stays
++ * closed), and in 1 % of won ? encounters, right after the battle (None loses it). */
++
++/* ASCII to game glyphs (host/devedit.c's table): '^' a new line, '{' the (X) button, '}' the
++ * (O) button, '>' the cursor; 0xFF ends. */
++static s32 Stg40_FpGlyphs(const char *s, u8 *out, s32 at, s32 max) {
++    static const char punct[] = "&?!/-,.'\";:%+=#>";
++    static const u8 punctGlyph[] = { 0x42, 0x44, 0x45, 0x46, 0x49, 0x54, 0x55, 0x56, 0x57,
++                                     0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x53 };
++    const char *p;
++
++    for (; *s != 0 && at < max - 1; s++) {
++        char ch = *s;
++
++        if (ch >= '0' && ch <= '9') {
++            out[at++] = (u8)(ch - '0');
++        } else if (ch >= 'A' && ch <= 'Z') {
++            out[at++] = (u8)(0x0A + ch - 'A');
++        } else if (ch >= 'a' && ch <= 'z') {
++            out[at++] = (u8)(0x24 + ch - 'a');
++        } else if (ch == ' ') {
++            out[at++] = 0xFD;
++        } else if (ch == '^') {
++            out[at++] = 0xFE;
++        } else if (ch == '{') {
++            out[at++] = 0x3F;
++        } else if (ch == '}') {
++            out[at++] = 0x3E;
++        } else if ((p = strchr(punct, ch)) != NULL) {
++            out[at++] = punctGlyph[p - punct];
++        }
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++/* A number as glyphs (digits are glyphs 0..9). */
++static s32 Stg40_FpGlyphNum(s32 v, u8 *out, s32 at, s32 max) {
++    char b[12];
++    s32 n = 0;
++
++    if (v < 0) {
++        v = 0;
++    }
++    do {
++        b[n++] = (char)(v % 10);
++        v /= 10;
++    } while (v != 0 && n < 11);
++    while (n > 0 && at < max - 1) {
++        out[at++] = (u8)b[--n];
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++/* A Digimon's name (already glyphs, 0xFF-ended, at most 13). */
++static s32 Stg40_FpGlyphName(const u8 *name, u8 *out, s32 at, s32 max) {
++    s32 i;
++
++    for (i = 0; i < 13 && name[i] != 0xFF && at < max - 1; i++) {
++        out[at++] = name[i];
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++#define FP_BOOST_PCT 1     /* % of chests, and of won ? encounters, that give one */
++#define FP_TEXT_MAX 192
++
++static struct {
++    s32 sel;               /* 0..count-1 a party Digimon, count = None */
++    s32 count;
++    DigiRosterEntry *party[3];
++    s32 used;              /* the result: 1 used, 2 none */
++    s32 shown;             /* what the open prompt shows (rebuilt on a change) */
++    s32 frames;            /* frames the prompt has been up (no input in the first ones) */
++} Stg40_FpBoost;
++static u8 Stg40_FpBoostText[FP_TEXT_MAX];
++
++static s32 Stg40_FpBoostOk(const DigiRosterEntry *e) {
++    return e->level >= e->maxLevel && e->maxLevel < 99;
++}
++
++/* The prompt's text: a box, the title, the selected choice and a hint (3 lines). */
++static void Stg40_FpBoostBuild(s32 chest) {
++    u8 *t = Stg40_FpBoostText;
++    s32 n = 0;
++
++    t[n++] = 0xFA; /* the message box (as the dungeon's messages open it) */
++    t[n++] = 0x00;
++    n = Stg40_FpGlyphs("A LvlLimitBoostr! Use it on:^", t, n, FP_TEXT_MAX);
++    if (Stg40_FpBoost.sel < Stg40_FpBoost.count) {
++        DigiRosterEntry *e = Stg40_FpBoost.party[Stg40_FpBoost.sel];
++
++        n = Stg40_FpGlyphs("> ", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphName(e->name, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs(" Lv", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->level, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("/", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->maxLevel, t, n, FP_TEXT_MAX);
++        if (e->maxLevel >= 99) {
++            n = Stg40_FpGlyphs("^Its limit is already 99.", t, n, FP_TEXT_MAX);
++        } else if (e->level < e->maxLevel) {
++            n = Stg40_FpGlyphs("^Not at its level limit yet.", t, n, FP_TEXT_MAX);
++        } else {
++            n = Stg40_FpGlyphs("^{ Use   } None   Up/Down", t, n, FP_TEXT_MAX);
++        }
++    } else {
++        n = Stg40_FpGlyphs("> None^", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs(chest ? "{ Leave it in the chest" : "{ Leave it", t, n, FP_TEXT_MAX);
++    }
++    t[n] = 0xFF;
++}
++
++static void Stg40_FpBoostOpen(void) {
++    TextOpenArgs arg;
++
++    memset(&arg, 0, sizeof(arg));
++    arg.bigFont = 1;
++    arg.color = 0;
++    arg.x = 0;
++    arg.y = 0;
++    arg.charAdvance = 0;
++    arg.lineAdvance = 0xF;
++    arg.text = (s32)(sptr)Stg40_FpBoostText;
++    arg.charDelay = 0; /* shown at once: drawn whole each frame, so it can be rewritten */
++    arg.strArg0 = 0;
++    arg.strArg1 = 0;
++    Text_Open(&Stg40_MsgWinTexts[1], &arg);
++}
++
++/* The result message ((X) closes it). */
++static void Stg40_FpBoostResult(s32 chest) {
++    u8 *t = Stg40_FpBoostText;
++    s32 n = 0;
++    TextOpenArgs arg;
++
++    t[n++] = 0xFA;
++    t[n++] = 0x00;
++    if (Stg40_FpBoost.used == 1) {
++        DigiRosterEntry *e = Stg40_FpBoost.party[Stg40_FpBoost.sel];
++
++        n = Stg40_FpGlyphName(e->name, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("'s level limit^rose to ", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->maxLevel, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("!", t, n, FP_TEXT_MAX);
++    } else {
++        n = Stg40_FpGlyphs(chest ? "You left the LvlLimitBoostr^in the chest." : "You left the LvlLimitBoostr.", t,
++                           n, FP_TEXT_MAX);
++    }
++    t[n++] = 0xFB; /* wait for (X) */
++    t[n] = 0xFF;
++    memset(&arg, 0, sizeof(arg));
++    arg.bigFont = 1;
++    arg.color = 0;
++    arg.x = 0;
++    arg.y = 0;
++    arg.charAdvance = 0;
++    arg.lineAdvance = 0xF;
++    arg.text = (s32)(sptr)Stg40_FpBoostText;
++    arg.charDelay = 1;
++    arg.strArg0 = 0;
++    arg.strArg1 = 0;
++    Text_Open(&Stg40_MsgWinTexts[1], &arg);
++}
++
++/* The prompt, run by a player state (a0->stateLevel2 from 10 on): 0 while it runs, then 1 the
++ * item was used, 2 None. */
++s32 Stg40_FpBoostPrompt(void *actor, s32 chest) {
++    Actor *a0 = (Actor *)actor;
++    s32 i;
++
++    switch (a0->stateLevel2) {
++    case 10:
++    default:
++        Stg40_FpBoost.count = 0;
++        for (i = 0; i < 3; i++) {
++            if (Save_GameState.elems[i].state >= 3) {
++                Stg40_FpBoost.party[Stg40_FpBoost.count++] = &Save_GameState.elems[i];
++            }
++        }
++        Stg40_FpBoost.sel = Stg40_FpBoost.count; /* None, unless someone can take it */
++        for (i = Stg40_FpBoost.count - 1; i >= 0; i--) {
++            if (Stg40_FpBoostOk(Stg40_FpBoost.party[i])) {
++                Stg40_FpBoost.sel = i;
++            }
++        }
++        Stg40_FpBoost.used = 0;
++        Stg40_FpBoost.frames = 0;
++        Stg40_FpBoost.shown = Stg40_FpBoost.sel;
++        Stg40_FpBoostBuild(chest);
++        Stg40_FpBoostOpen();
++        Snd_PlayById(0x19, 0);
++        Task_SetState2(a0, 11);
++        return 0;
++    case 11:
++        if (++Stg40_FpBoost.frames < 8) {
++            return 0; /* let the box open, and the button that got here go */
++        }
++        if (Pad_State[0].up > 0 || Pad_State[0].left > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.sel == 0 ? Stg40_FpBoost.count : Stg40_FpBoost.sel - 1;
++        } else if (Pad_State[0].down > 0 || Pad_State[0].right > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.sel >= Stg40_FpBoost.count ? 0 : Stg40_FpBoost.sel + 1;
++        } else if (Pad_State[0].circle > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.count;
++            Stg40_FpBoost.used = 2;
++        } else if (Pad_State[0].cross > 0) {
++            if (Stg40_FpBoost.sel >= Stg40_FpBoost.count) {
++                Stg40_FpBoost.used = 2;
++            } else if (Stg40_FpBoostOk(Stg40_FpBoost.party[Stg40_FpBoost.sel])) {
++                Stg40_FpBoost.party[Stg40_FpBoost.sel]->maxLevel++;
++                Stg40_FpBoost.used = 1;
++            } else {
++                Snd_PlayById(0x1C, 0); /* can't: the bag-full sound */
++            }
++        }
++        if (Stg40_FpBoost.used != 0) {
++            Stg40_MsgWinClose(1);
++            Snd_PlayById(Stg40_FpBoost.used == 1 ? 0x19 : 0x13, 0);
++            Task_SetState2(a0, 12);
++            return 0;
++        }
++        if (Stg40_FpBoost.sel != Stg40_FpBoost.shown) {
++            /* the next choice: the open box's text is rewritten in place (the text engine
++             * reads it again each frame; its one command, the box, stays first and done) */
++            Snd_PlayById(0xC, 0);
++            Stg40_FpBoost.shown = Stg40_FpBoost.sel;
++            Stg40_FpBoostBuild(chest);
++        }
++        return 0;
++    case 12:
++        Stg40_FpBoostResult(chest);
++        Task_SetState2(a0, 13);
++        return 0;
++    case 13:
++        if (Stg40_MsgWinCloseIfDone(1) == 1) {
++            return Stg40_FpBoost.used;
++        }
++        return 0;
++    }
++}
++
++/* Battle start (stag4000.c, the encounter): which party, and whether it shows as a ?. */
++void Stg40_FpNoteBattle(void *ent) {
++    Stg40Ent48 *e = (Stg40Ent48 *)ent;
++    sptr off = (sptr)e->params - (sptr)Dung_StatePtr->parties[0];
++    s32 idx = (s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0]));
++
++    Host_FpSetNote(FP_NOTE_WON, 0);
++    Host_FpSetNote(FP_NOTE_BATTLE, FP_NOTE_VALID | (idx & 0xFF) | (Stg40_FpMystery(e) ? FP_NOTE_BATTLE_MYST : 0));
++}
++
++/* Back from a battle (once): a won ? battle gives a LvlLimitBoostr 1 % of the time (F1). */
++s32 Stg40_FpBattleBoostDue(void) {
++    s32 b = Host_FpGetNote(FP_NOTE_BATTLE);
++    s32 won = Host_FpGetNote(FP_NOTE_WON);
++
++    Host_FpSetNote(FP_NOTE_BATTLE, 0);
++    Host_FpSetNote(FP_NOTE_WON, 0);
++    if (!(b & FP_NOTE_VALID) || !(b & FP_NOTE_BATTLE_MYST) || won == 0) {
++        return 0;
++    }
++    return Host_FpBoostBattles() && Host_FpRandom() % 100 < FP_BOOST_PCT;
++}
++
++/* After Stg40_SpawnChests on a new floor: no chest rolled or holding one yet. */
++void Stg40_FpRollChestBoost(void) {
++    Host_FpSetNote(FP_NOTE_ROLLED, 0);
++    Host_FpSetNote(FP_NOTE_CHEST, 0);
++}
++
++/* The bit of a chest record (Stg40_SpawnChests: chests[n + 1], 12 records), -1 none. */
++static s32 Stg40_FpChestBit(void *rec) {
++    sptr off = (u8 *)rec - Dung_StatePtr->chests[0];
++
++    if (off < 0 || off % (sptr)sizeof(Dung_StatePtr->chests[0]) != 0) {
++        return -1;
++    }
++    off /= (sptr)sizeof(Dung_StatePtr->chests[0]);
++    return off < 12 ? (s32)off : -1;
++}
++
++/* The chest holds a LvlLimitBoostr (asked once as it is opened, Stg40_PlayerTakeChestItem):
++ * every chest is rolled the first time it is opened, 1 % (F1); one left with None keeps it. */
++s32 Stg40_FpChestHasBoost(void *rec) {
++    s32 bit = Stg40_FpChestBit(rec);
++    s32 rolled;
++
++    if (bit < 0) {
++        return 0;
++    }
++    if (Host_FpGetNote(FP_NOTE_CHEST) & (1 << bit)) {
++        return 1;
++    }
++    rolled = Host_FpGetNote(FP_NOTE_ROLLED);
++    if (rolled & (1 << bit)) {
++        return 0; /* rolled before: a bag that was full can't roll it again */
++    }
++    Host_FpSetNote(FP_NOTE_ROLLED, rolled | (1 << bit));
++    if (Host_FpBoostChests() && Host_FpRandom() % 100 < FP_BOOST_PCT) {
++        Host_FpSetNote(FP_NOTE_CHEST, Host_FpGetNote(FP_NOTE_CHEST) | (1 << bit));
++        return 1;
++    }
++    return 0;
++}
++
++/* The chest's LvlLimitBoostr was used. */
++void Stg40_FpChestBoostTaken(void *rec) {
++    s32 bit = Stg40_FpChestBit(rec);
++
++    if (bit >= 0) {
++        Host_FpSetNote(FP_NOTE_CHEST, Host_FpGetNote(FP_NOTE_CHEST) & ~(1 << bit));
++    }
++}
++
++/* POLY_G3 (gouraud flat triangle), 0x1C bytes, 6 words after the tag. */
++typedef struct {
++    Stg40Tag tag;
++    u8 r0, g0, b0, code;
++    s16 x0, y0;
++    u8 r1, g1, b1, p1;
++    s16 x1, y1;
++    u8 r2, g2, b2, p2;
++    s16 x2, y2;
++} Stg40FpG3;
++
++/* A flat-coloured quad (corner order P0 P1 / P2 P3), both sides, faded like the floor. */
++static void Stg40_FpQuadColor(Stg40FpCtx *c, const float p[4][3], u8 r, u8 g, u8 b) {
++    static const float uv[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
++    Stg40FpVert v[FP_MAXV];
++    s32 sx[FP_MAXV];
++    s32 sy[FP_MAXV];
++    u32 *ot;
++    s32 otz;
++    s32 n;
++    s32 i;
++
++    if (c->full) {
++        return;
++    }
++    n = Stg40_FpPrepQuad(&c->view, p, uv, 255, 0, v);
++    if (n == 0) {
++        return;
++    }
++    otz = 0;
++    for (i = 0; i < n; i++) {
++        SVECTOR sv;
++        int sxy = 0;
++        int dummy = 0;
++        int flag = 0;
++
++        sv.vx = Stg40_FpS16(v[i].w[0]);
++        sv.vy = Stg40_FpS16(v[i].w[1]);
++        sv.vz = Stg40_FpS16(v[i].w[2]);
++        sv.pad = 0;
++        otz += RotTransPers(&sv, &sxy, &dummy, &flag);
++        sx[i] = (s16)(sxy & 0xFFFF) >> c->shiftX;
++        sy[i] = (s16)((u32)sxy >> 16) >> c->shiftY;
++    }
++    otz = otz / n >> c->shiftZ;
++    if (otz < 1) {
++        otz = 1;
++    } else if (otz > c->maxOtz) {
++        otz = c->maxOtz;
++    }
++    ot = &Sys_State.otLayers.u[3][otz];
++    for (i = 1; i + 1 < n; i++) {
++        Stg40FpG3 *t = (Stg40FpG3 *)c->pkt;
++        s32 k[3];
++        s32 j;
++
++        if (c->pkt + sizeof(Stg40FpG3) > c->end) {
++            c->full = 1;
++            return;
++        }
++        k[0] = 0;
++        k[1] = i;
++        k[2] = i + 1;
++        t->tag.word = 0;
++        t->tag.b.len = 6;
++        t->code = 0x30;
++        t->p1 = 0;
++        t->p2 = 0;
++        for (j = 0; j < 3; j++) {
++            float f = v[k[j]].shade / 255.0f;
++            u8 cr = Stg40_FpByte(r * f);
++            u8 cg = Stg40_FpByte(g * f);
++            u8 cb = Stg40_FpByte(b * f);
++
++            if (j == 0) {
++                t->r0 = cr;
++                t->g0 = cg;
++                t->b0 = cb;
++                t->x0 = sx[k[j]];
++                t->y0 = sy[k[j]];
++            } else if (j == 1) {
++                t->r1 = cr;
++                t->g1 = cg;
++                t->b1 = cb;
++                t->x1 = sx[k[j]];
++                t->y1 = sy[k[j]];
++            } else {
++                t->r2 = cr;
++                t->g2 = cg;
++                t->b2 = cb;
++                t->x2 = sx[k[j]];
++                t->y2 = sy[k[j]];
++            }
++        }
++        t->tag.word = (t->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++        *ot = (*ot & 0xFF000000) | ((u32)(uintptr_t)c->pkt & 0xFFFFFF);
++        c->pkt += sizeof(Stg40FpG3);
++    }
++}
++
++/* A floating ? over a map position, bobbing, always facing the camera (a sign, so it reads
++ * from any view, the steep classic one too), in whichever view is up: world positions come
++ * from Stg40_FpWorldX / Z, the camera from GsWSMATRIX (its rows are the camera's axes). */
++void Stg40_FpDrawMystery(void *locp) {
++    static const char glyph[7][6] = { ".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.." };
++    Stg40Loc *loc = (Stg40Loc *)locp;
++    Stg40FpCtx c;
++    float right[3];
++    float up[3];
++    float cx;
++    float cz;
++    float cy;
++    float n;
++    float half = FP_MYSTERY_PIX * 0.5f;
++    s32 gx;
++    s32 gy;
++    s32 k;
++
++    if (!Stg40_FpPoll() || Stg40_FpOutOfRange(loc->posX, loc->posY)) {
++        return;
++    }
++    if (!Stg40_FpBegin(&c)) {
++        PopMatrix();
++        return;
++    }
++    n = sqrtf(c.view.m[0][0] * c.view.m[0][0] + c.view.m[0][1] * c.view.m[0][1] + c.view.m[0][2] * c.view.m[0][2]);
++    for (k = 0; k < 3; k++) {
++        right[k] = n > 0.0f ? c.view.m[0][k] / n : (k == 0);
++    }
++    n = sqrtf(c.view.m[1][0] * c.view.m[1][0] + c.view.m[1][1] * c.view.m[1][1] + c.view.m[1][2] * c.view.m[1][2]);
++    for (k = 0; k < 3; k++) {
++        up[k] = n > 0.0f ? -c.view.m[1][k] / n : -(float)(k == 1); /* camera y points down */
++    }
++    cx = (float)Stg40_FpWorldX(loc->posX);
++    cz = (float)Stg40_FpWorldZ(loc->posY);
++    cy = -(FP_MYSTERY_HEIGHT + loc->height + sinf(Sys_State.frameCount * 0.1f) * 0x80);
++    for (gy = 0; gy < 7; gy++) {
++        for (gx = 0; gx < 5; gx++) {
++            float lx;
++            float ly;
++            float p[4][3];
++
++            if (glyph[gy][gx] != '#') {
++                continue;
++            }
++            lx = (gx - 2) * (float)FP_MYSTERY_PIX;
++            ly = (3 - gy) * (float)FP_MYSTERY_PIX; /* up from the middle */
++            for (k = 0; k < 4; k++) {
++                float sx = lx + ((k & 1) ? half : -half);
++                float sy = ly + ((k & 2) ? -half : half);
++
++                p[k][0] = cx + right[0] * sx + up[0] * sy;
++                p[k][1] = cy + right[1] * sx + up[1] * sy;
++                p[k][2] = cz + right[2] * sx + up[2] * sy;
++            }
++            Stg40_FpQuadColor(&c, (const float(*)[3])p, 0xFF, 0xD8, 0x30);
++        }
++    }
++    Stg40_FpEnd(&c);
++}
+diff --git a/src/stag4000/linkedmodel.c b/src/stag4000/linkedmodel.c
+index 655f0dc..1de251c 100644
+--- a/src/stag4000/linkedmodel.c
++++ b/src/stag4000/linkedmodel.c
+@@ -1,5 +1,8 @@
+ #include "common.h"
+ #include "stag4000/stag4000.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptor comes first). */
+ void Stg40_LinkedModelInit(Actor *a0, Stg40LinkedModelArg *a1);
+@@ -91,6 +94,12 @@ void Stg40_LinkedModelDraw(Actor *a0) {
+         Anim_StepModelAnim(a0);
+         Actor_UpdateTransform(a0);
+         Gfx_CalcModelBoneMatrices(a0);
++#ifdef DW2_NATIVE
++        if (Stg40_FpHidesActor(p)) {
++            Stg40_FpAnimateHiddenTex(a0); /* FP: on the hidden beetle; anim runs, nothing drawn */
++            return;
++        }
++#endif
+         Gfx_DrawTexModel(a0, 0);
+     }
+ }
+diff --git a/src/stag4000/obj.c b/src/stag4000/obj.c
+index 4453340..ef8a8c9 100644
+--- a/src/stag4000/obj.c
++++ b/src/stag4000/obj.c
+@@ -4,6 +4,9 @@
+ #include "stag4000/linkedmodel.h"
+ #include "stag4000/obj.h"
+ #include "stag4000/player.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ u8 Stg40_FlashPattern[] = { 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0xFF, 0 };
+ Stg40Col Stg40_FlashColors[] = {
+@@ -432,6 +435,18 @@ static void Stg40_SideDrawEnt(Actor *a0) {
+     if (!(e->flags & 0x4000) || !vis || a0->u38.ptr38 == NULL) {
+         return;
+     }
++    if (Stg40_FpHidesEnt(e) || Stg40_FpOutOfRange(e->loc.posX, e->loc.posY)) {
++        return; /* FP: the camera is in the beetle / too far for s16 positions */
++    }
++    if (Stg40_FpMystery(e)) { /* FP: a mystery encounter, its shadow and a ? */
++        if (!(e->flags & 0x80)) {
++            Stg40_DrawEntityShadow(&e->loc);
++        }
++        if (!(e->flags & 0x400)) {
++            Stg40_FpDrawMystery(&e->loc);
++        }
++        return;
++    }
+     if (!(e->flags & 0x400)) {
+         s = Stg40_SideModelFor(a0, w->modelFile);
+         if (s == NULL || Stg40_SidePacketRoom() < s->needBytes + 0x100) {
+@@ -466,10 +481,10 @@ static void Stg40_SideDrawEnt(Actor *a0) {
+     }
+     memcpy(s->xform, a0->u38.ptr38, sizeof(s->xform));
+     x = (Stg40Xform *)s->xform;
+-    x->posX = (s16)((e->loc.posX - Stg40_RootState->viewX) * 40);
+-    x->posZ = (s16)-(((e->loc.posY - Stg40_RootState->viewY) << 11) / 64);
++    x->posX = (s16)Stg40_FpWorldX(e->loc.posX); /* FP: player-centred, square tiles */
++    x->posZ = (s16)Stg40_FpWorldZ(e->loc.posY);
+     x->posY = -(s16)e->loc.height;
+-    x->rotY = e->heading;
++    x->rotY = Stg40_FpDrawHeading(e, e->heading); /* FP: eased with smooth turning */
+     x->scaleX = e->scaleX;
+     x->scaleY = e->scaleY;
+     x->scaleZ = e->scaleZ;
+@@ -549,14 +564,51 @@ void Stg40_ObjDraw(Actor *a0) {
+             w->pendingAnim = -1;
+         }
+         x = (Stg40Xform *)a0->u38.ptr38;
++#ifdef DW2_NATIVE
++        /* FP: player-centred, square tiles (the retail values otherwise) */
++        x->posX = (s16)Stg40_FpWorldX(e->loc.posX);
++        x->posZ = (s16)Stg40_FpWorldZ(e->loc.posY);
++#else
+         x->posX = (s16)((e->loc.posX - Stg40_RootState->viewX) * 40);
+         x->posZ = (s16)-(((e->loc.posY - Stg40_RootState->viewY) << 11) / 64);
++#endif
+         x->posY = -(s16)e->loc.height;
++#ifdef DW2_NATIVE
++        if (Stg40_FpOutOfRange(e->loc.posX, e->loc.posY)) {
++            x->posX = 0;
++            x->posZ = 0;
++            x->posY = 0x7000; /* FP: far below the floor, where the GTE flags cull it */
++        }
++#endif
+         x->rotY = e->heading;
++#ifdef DW2_NATIVE
++        x->rotY = Stg40_FpDrawHeading(e, x->rotY); /* FP: eased with smooth turning */
++#endif
+         x->scaleX = e->scaleX;
+         x->scaleY = e->scaleY;
+         x->scaleZ = e->scaleZ;
+         if ((e->flags & 0x4000) && vis) {
++#ifdef DW2_NATIVE
++            if (Stg40_FpHidesEnt(e) || Stg40_FpMystery(e)) {
++                /* FP: the camera is inside the beetle, or a mystery encounter. The anim still
++                 * runs (the turn logic waits on it), and the texture anim keeps its RNG calls,
++                 * only the model is not drawn; a mystery one shows its shadow and a ? */
++                if (!(e->flags & 0x400)) {
++                    Anim_StepModelAnim(a0);
++                    Actor_UpdateTransform(a0);
++                    Gfx_CalcModelBoneMatrices(a0);
++                    Stg40_FpAnimateHiddenTex(a0);
++                }
++                if (!Stg40_FpHidesEnt(e)) {
++                    if (!(e->flags & 0x80)) {
++                        Stg40_DrawEntityShadow(&e->loc);
++                    }
++                    if (!(e->flags & 0x400)) {
++                        Stg40_FpDrawMystery(&e->loc);
++                    }
++                }
++            } else {
++#endif
+             if (!(e->flags & 0x80)) {
+                 Stg40_DrawEntityShadow(&e->loc);
+             }
+@@ -566,13 +618,19 @@ void Stg40_ObjDraw(Actor *a0) {
+                 Gfx_CalcModelBoneMatrices(a0);
+                 Gfx_DrawTexModel(a0, 0);
+             }
++#ifdef DW2_NATIVE
++            }
++#endif
+         }
+         w->drawn = 1;
+     }
+ #ifdef DW2_NATIVE
+-    /* PG.8a 16:9: the extra floor columns; drawn after the draw pass on a side model */
+-    else if (Host_WideMargin(Sys_State.centerX.s * 2) != 0 && dx < 0x140 + STG40_WIDE_COLS * 0x40 &&
+-             dy < 0x140 && Stg40_SideCount < STG40_SIDE_MAX) {
++    /* PG.8a 16:9: the extra floor columns; drawn after the draw pass on a side model.
++     * FP: everything out to STG40_FP_RADIUS the same way */
++    else if (((Host_WideMargin(Sys_State.centerX.s * 2) != 0 && dx < 0x140 + STG40_WIDE_COLS * 0x40 &&
++               dy < 0x140) ||
++              (Stg40_FpActive() && dx < STG40_FP_RADIUS * 0x40 && dy < STG40_FP_RADIUS * 0x40)) &&
++             Stg40_SideCount < STG40_SIDE_MAX) {
+         Stg40_SideQueue[Stg40_SideCount++] = a0;
+         Gfx_LateDraw = Stg40_DrawSideEntities;
+     }
+diff --git a/src/stag4000/player.c b/src/stag4000/player.c
+index e62f07d..10a35d7 100644
+--- a/src/stag4000/player.c
++++ b/src/stag4000/player.c
+@@ -7,6 +7,9 @@
+ #include "stag4000/msgwin.h"
+ #include "stag4000/obj.h"
+ #include "stag4000/player.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ Stg40XY16 Stg40_DirOffsets[] = {
+     { 1, 1 }, { 0, 1 }, { -1, 1 }, { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 }, { 1, 0 }, { 1, 1 }, { 0, 1 },
+@@ -59,7 +62,12 @@ s32 Stg40_PlayerCheckEnemyInfo(Actor *a0) {
+         Stg40_RootState->enemyCount = 0;
+         Stg40_RootState->enemyIndex = 0;
+         for (i = 0; i < Dung_StatePtr->entCount; e++, i++) {
++#ifdef DW2_NATIVE
++            /* FP: mystery encounters are left off the enemy info list */
++            if ((e->flags & 0x8000) && e->kind == 1 && e->roomId == self->roomId && !Stg40_FpMystery(e)) {
++#else
+             if ((e->flags & 0x8000) && e->kind == 1 && e->roomId == self->roomId) {
++#endif
+                 Stg40_RootState->enemyList[Stg40_RootState->enemyCount++] = e;
+             }
+         }
+@@ -188,6 +196,12 @@ s32 Stg40_PlayerTryMove(Stg40Ent48 *e) {
+     if (loc->moving != 0) {
+         return 0;
+     }
++#ifdef DW2_NATIVE
++    if (Stg40_FpRelative()) {
++        /* FP: the pad relative to the view (turns in place happen in there) */
++        k = Stg40_FpPadOctant(e);
++    } else {
++#endif
+     bits = (Pad_State[0].right != 0) << 2;
+     if (Pad_State[0].left != 0) {
+         bits |= 8;
+@@ -198,6 +212,9 @@ s32 Stg40_PlayerTryMove(Stg40Ent48 *e) {
+     }
+     idx = dir | (Pad_State[0].down != 0);
+     k = Stg40_PadDirTable[idx];
++#ifdef DW2_NATIVE
++    }
++#endif
+     oct = (s16)k;
+     if (k < 0) {
+         return 0;
+@@ -539,6 +556,19 @@ void Stg40_PlayerInput(Actor *a0) {
+ void Stg40_PlayerResumeAfterBattle(Actor *a0) {
+     Stg40Ent48 *e = ((Stg40ActWork *)a0->work)->ent;
+ 
++#ifdef DW2_NATIVE
++    /* FP: a won ? battle may give a LvlLimitBoostr, offered before play goes on */
++    if (a0->stateLevel2 >= 10) {
++        if (Stg40_FpBoostPrompt(a0, 0) != 0) {
++            Task_SetState2(a0, 2);
++        }
++        return;
++    }
++    if (a0->stateLevel2 == 2 && Dung_StatePtr->freeze == 0 && Stg40_FpBattleBoostDue()) {
++        Task_SetState2(a0, 10);
++        return;
++    }
++#endif
+     switch (a0->stateLevel2) {
+     case 0:
+     default:
+@@ -1086,6 +1116,28 @@ void Stg40_PlayerTakeChestItem(Actor *a0) {
+     Actor *t = Stg40_RootState->targetActor;
+     u8 *d = Stg40_RootState->targetEnt->params;
+ 
++#ifdef DW2_NATIVE
++    /* FP: a LvlLimitBoostr in this chest (1 % of chests): used at once on a party Digimon
++     * (the chest opens), or None (it stays in the chest, which stays closed, as with a full
++     * bag) */
++    if (a0->stateLevel2 >= 10 || (a0->stateLevel2 == 0 && Stg40_FpChestHasBoost(d))) {
++        if (a0->stateLevel2 == 0) {
++            Task_SetState2(a0, 10);
++        }
++        switch (Stg40_FpBoostPrompt(a0, 1)) {
++        case 1:
++            Stg40_FpChestBoostTaken(d);
++            Task_SetState1(t, 5);
++            Task_SetState1(a0, 6);
++            break;
++        case 2:
++            d[1] = 0xFF; /* its trap is dealt with, as when the bag is full */
++            Task_SetState1(a0, 6);
++            break;
++        }
++        return;
++    }
++#endif
+     switch (a0->stateLevel2) {
+     case 0:
+     default:
+diff --git a/src/stag4000/spawn.c b/src/stag4000/spawn.c
+index 7e212e2..66ee83d 100644
+--- a/src/stag4000/spawn.c
++++ b/src/stag4000/spawn.c
+@@ -10,6 +10,9 @@
+ #include "stag4000/msgwin.h"
+ #include "stag4000/obj.h"
+ #include "stag4000/player.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ #include "stag4000/enemy.h"
+ #include "stag4000/entity.h"
+ 
+@@ -141,6 +144,10 @@ void Stg40_SpawnEnemyParties(void) {
+             Stg40_AddEntity(1, 0, c, 0, r->x, r->y);
+             s = (Stg40EnemyParty *)Dung_StatePtr->parties[Dung_StatePtr->partyCount - 1];
+             s->setId = id;
++#ifdef DW2_NATIVE
++            /* FP: mystery encounters, this party's boss flag, pick and roll */
++            Stg40_FpNoteParty(Dung_StatePtr->partyCount - 1, out.isBossFight != 0, k);
++#endif
+             s->useDungeonBgm = out.useDungeonBgm != 0;
+             s->likedGift = out.likedGift;
+             s->pointsPerLevel = out.pointsPerLevel;
+@@ -172,6 +179,9 @@ void Stg40_SpawnEnemyParties(void) {
+             }
+         }
+     }
++#ifdef DW2_NATIVE
++    Stg40_FpRollMystery(); /* FP: the floor's one mystery party */
++#endif
+ }
+ 
+ void Stg40_SpawnChests(void) {
+diff --git a/src/stag4000/stag4000.c b/src/stag4000/stag4000.c
+index 39fa383..0ef2014 100644
+--- a/src/stag4000/stag4000.c
++++ b/src/stag4000/stag4000.c
+@@ -1,5 +1,8 @@
+ #include "common.h"
+ #include "stag4000/stag4000.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptors come first). Not
+  * stag4000_funcs.h: Stg40_SetupStage calls Stg40_InitDungeonEntry before its K&R definition. */
+@@ -168,6 +171,9 @@ void Stg40_SetupStage(Actor *a0) {
+         }
+         Stg40_SpawnEnemyParties();
+         Stg40_SpawnChests();
++#ifdef DW2_NATIVE
++        Stg40_FpRollChestBoost(); /* FP: LvlLimitBoostr chests: none rolled yet on this floor */
++#endif
+         Stg40_SpawnFixedHazards();
+         Stg40_ApplyTrapCells();
+         Stg40_SpawnRandomHazards();
+@@ -244,6 +250,9 @@ s32 Stg40_BeginTransition(Actor *arg0) {
+         }
+         Dung_StatePtr->giftLevel = q;
+         Sys_State.modeArg = ((Stg40EnemyParty *)*slot)->setId;
++#ifdef DW2_NATIVE
++        Stg40_FpNoteBattle(e); /* FP: which party, and whether it was a ? */
++#endif
+         if (((Stg40EnemyParty *)*slot)->useDungeonBgm != 0) {
+             if (Flag_Test(0x88) != 0 && Dung_StatePtr->dungeon.battleBgmId == 0x100) {
+                 a0v = 0x101;

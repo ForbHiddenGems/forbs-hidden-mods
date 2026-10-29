@@ -1,0 +1,534 @@
+From 899c620d1377824cc53e19b87a38b4c40b55ec3c Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Mon, 26 Oct 2026 22:11:54 +0000
+Subject: [PATCH 12/26] LvlLimitBoostr: a rare find that raises a party
+ Digimon's level limit by 1
+
+With mystery encounters on: 1% of won ? battles offer it right after the
+battle, and on 1% of floors with a ? one chest holds it. It is used at once:
+a message box asks which party Digimon gets +1 to its level limit (only at its
+limit, and below 99), or None. None from a chest leaves the chest closed with
+the item still in it. Never kept in the bag, so saves stay compatible.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ doc/FPVIEW.md                  |  19 ++
+ include/stag4000/fpview.h      |   8 +
+ src/stag3000/battle.c          |   3 +
+ src/stag4000/fpview_native.inc | 307 ++++++++++++++++++++++++++++++++-
+ src/stag4000/player.c          |  34 ++++
+ src/stag4000/stag4000.c        |   9 +
+ 6 files changed, 377 insertions(+), 3 deletions(-)
+
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+index af8c413..238c8be 100644
+--- a/doc/FPVIEW.md
++++ b/doc/FPVIEW.md
+@@ -17,6 +17,8 @@ on by default, `smooth_turns`) eases the camera and the beetle round when it tur
+ floating ? until the battle starts: 1 per floor, 30% of encounters, all except bosses, or off
+ (the default). It works in every view, Classic too. **A ? holds a rarer Digimon** (F1, on by
+ default, `mystery_rare`) swaps each ? for one of its floor's less common enemy groups.
++**LvlLimitBoostr**: a rare one-use find that raises a party Digimon's level limit by 1 (see
++below); it only appears with mystery encounters on.
+ 
+ ## Controls in the 3D views
+ 
+@@ -104,6 +106,23 @@ before, and the PS1 matching build is untouched: every change is inside `#ifdef
+   boss set. The party (Digimon, levels, AI, pace, gift) and its map model are filled in as
+   `Stg40_SpawnEnemyParties` fills a new one, so the floor's own table and levels hold.
+ 
++## LvlLimitBoostr
++
++- **What it does**: +1 to a party Digimon's level limit (`maxLevel`). Only for a Digimon at
++  its limit whose limit is below 99; a limit of 99 can't be raised.
++- **Where it comes from** (with mystery encounters on; `FP_BOOST_PCT`, 1 %):
++  - 1 % of won ? battles: offered right after the battle (`Stg40_FpNoteBattle` at the
++    encounter, the battle stage's win path notes the win, `Stg40_FpBattleBoostDue` back in the
++    dungeon). None loses it.
++  - 1 % of floors with a ? party: one of the floor's chests holds it instead of its item
++    (`Stg40_FpRollChestBoost` after `Stg40_SpawnChests`). None leaves it in the chest, which
++    stays closed (as with a full bag), to come back to.
++- **The prompt** (`Stg40_FpBoostPrompt`): a message box with the title, the selected party
++  Digimon (name, level / limit) or None, and a hint; Up / Down (or Left / Right) choose,
++  (X) confirms, (O) is None. A Digimon that can't take it says why. The text is the game's own
++  glyph encoding (`Stg40_FpGlyphs`, the table of `host/devedit.c`).
++- **Never in the bag**: used at once or left, so a save stays readable by the official port.
++
+ ## Tuning
+ 
+ `src/stag4000/fpview_math.inc`: `FP_HIGH_*` and `FP_LOW_*` (chase cameras: pivot height,
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+index 1f5c230..369cde5 100644
+--- a/include/stag4000/fpview.h
++++ b/include/stag4000/fpview.h
+@@ -57,6 +57,14 @@ void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick);
+ void Stg40_FpRollMystery(void);
+ s32 Stg40_FpMystery(void *ent);
+ void Stg40_FpDrawMystery(void *loc);
++/* LvlLimitBoostr: the pick-a-Digimon prompt (a player state's stateLevel2 from 10: 0 running,
++ * 1 used, 2 None), the battle and chest routes. */
++s32 Stg40_FpBoostPrompt(void *actor, s32 chest);
++void Stg40_FpNoteBattle(void *ent);
++s32 Stg40_FpBattleBoostDue(void);
++void Stg40_FpRollChestBoost(void);
++s32 Stg40_FpChestHasBoost(void *rec);
++void Stg40_FpChestBoostTaken(void);
+ 
+ #endif
+ 
+diff --git a/src/stag3000/battle.c b/src/stag3000/battle.c
+index e486a11..de80421 100644
+--- a/src/stag3000/battle.c
++++ b/src/stag3000/battle.c
+@@ -281,6 +281,9 @@ void Stg30_BattleWonUpdate(Actor *a0) {
+             } else {
+                 Sys_State.modeArg = 2;
+                 Sys_State.nextGameMode = Sys_State.prevGameMode;
++#ifdef DW2_NATIVE
++                Host_FpSetNote(12, 1); /* FP: the battle was won (src/stag4000/fpview_native.inc) */
++#endif
+             }
+             Task_NextState3(a0);
+             break;
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+index 2dfd4fe..65d932c 100644
+--- a/src/stag4000/fpview_native.inc
++++ b/src/stag4000/fpview_native.inc
+@@ -4,6 +4,7 @@
+  * Overview in include/stag4000/fpview.h; the pure geometry is in fpview_math.inc. */
+ 
+ #include <math.h>
++#include <string.h>
+ #include "stag4000/fpview.h"
+ #include "fpview_math.inc"
+ 
+@@ -913,6 +914,11 @@ void Stg40_FpDrawMapArrow(s32 x, s32 y, s32 cx, s32 cy, s32 scale, s32 fade) {
+ #define FP_NOTE_BOSS 0x100
+ #define FP_NOTE_PICK_SHIFT 10
+ #define FP_NOTE_SWAPPED 0x4000
++#define FP_NOTE_PARTIES 10   /* notes 0..9: the floor's enemy parties (at most 10) */
++#define FP_NOTE_WON 12       /* set by the battle stage when a battle is won (stag3000) */
++#define FP_NOTE_BATTLE 13    /* the party of the battle under way: FP_NOTE_VALID | index, mystery */
++#define FP_NOTE_BATTLE_MYST 0x400
++#define FP_NOTE_CHEST 14     /* the floor's LvlLimitBoostr chest: FP_NOTE_VALID | chest index */
+ #define FP_NOTE_CHOSEN 15
+ 
+ /* Stg40_SpawnEnemyParties, per party: its boss flag, its pick, a roll from the mod's own
+@@ -926,7 +932,7 @@ void Stg40_FpNoteParty(s32 index, s32 boss, s32 pick) {
+ static s32 Stg40_FpMysteryIdx(s32 idx, s32 mode) {
+     s32 v;
+ 
+-    if (mode == 0 || idx < 0 || idx >= FP_NOTE_CHOSEN || Dung_StatePtr == NULL || idx >= Dung_StatePtr->partyCount) {
++    if (mode == 0 || idx < 0 || idx >= FP_NOTE_PARTIES || Dung_StatePtr == NULL || idx >= Dung_StatePtr->partyCount) {
+         return 0;
+     }
+     v = Host_FpGetNote(idx);
+@@ -1084,7 +1090,7 @@ void Stg40_FpRollMystery(void) {
+     s32 count = 0;
+     s32 i;
+ 
+-    for (i = 0; i < FP_NOTE_CHOSEN; i++) {
++    for (i = 0; i < FP_NOTE_PARTIES; i++) {
+         s32 v = Host_FpGetNote(i);
+ 
+         if (i >= n) {
+@@ -1095,7 +1101,7 @@ void Stg40_FpRollMystery(void) {
+     }
+     Host_FpSetNote(FP_NOTE_CHOSEN, count != 0 ? FP_NOTE_VALID | pick[Host_FpRandom() % count] : 0);
+     if (mode != 0 && Host_FpMysteryRare()) {
+-        for (i = 0; i < n && i < FP_NOTE_CHOSEN; i++) {
++        for (i = 0; i < n && i < FP_NOTE_PARTIES; i++) {
+             if (Stg40_FpMysteryIdx(i, mode)) {
+                 Stg40_FpSwapRarer(i);
+             }
+@@ -1118,6 +1124,301 @@ s32 Stg40_FpMystery(void *ent) {
+     return Stg40_FpMysteryIdx((s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0])), Host_FpMystery());
+ }
+ 
++/* ---- LvlLimitBoostr ---------------------------------------------------------------------- */
++
++/* A one-use item, never kept in the bag (so saves stay readable by the official port): found,
++ * it asks at once which party Digimon gets +1 to its level limit, or None. Usable on a
++ * Digimon at its limit whose limit is below 99. Found in 1 % of won ? battles (right after
++ * the battle; None loses it) and, on 1 % of floors with a ?, in one of the floor's chests
++ * (None leaves it in the chest, which stays closed). */
++
++/* ASCII to game glyphs (host/devedit.c's table): '^' a new line, '{' the (X) button, '}' the
++ * (O) button, '>' the cursor; 0xFF ends. */
++static s32 Stg40_FpGlyphs(const char *s, u8 *out, s32 at, s32 max) {
++    static const char punct[] = "&?!/-,.'\";:%+=#>";
++    static const u8 punctGlyph[] = { 0x42, 0x44, 0x45, 0x46, 0x49, 0x54, 0x55, 0x56, 0x57,
++                                     0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x53 };
++    const char *p;
++
++    for (; *s != 0 && at < max - 1; s++) {
++        char ch = *s;
++
++        if (ch >= '0' && ch <= '9') {
++            out[at++] = (u8)(ch - '0');
++        } else if (ch >= 'A' && ch <= 'Z') {
++            out[at++] = (u8)(0x0A + ch - 'A');
++        } else if (ch >= 'a' && ch <= 'z') {
++            out[at++] = (u8)(0x24 + ch - 'a');
++        } else if (ch == ' ') {
++            out[at++] = 0xFD;
++        } else if (ch == '^') {
++            out[at++] = 0xFE;
++        } else if (ch == '{') {
++            out[at++] = 0x3F;
++        } else if (ch == '}') {
++            out[at++] = 0x3E;
++        } else if ((p = strchr(punct, ch)) != NULL) {
++            out[at++] = punctGlyph[p - punct];
++        }
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++/* A number as glyphs (digits are glyphs 0..9). */
++static s32 Stg40_FpGlyphNum(s32 v, u8 *out, s32 at, s32 max) {
++    char b[12];
++    s32 n = 0;
++
++    if (v < 0) {
++        v = 0;
++    }
++    do {
++        b[n++] = (char)(v % 10);
++        v /= 10;
++    } while (v != 0 && n < 11);
++    while (n > 0 && at < max - 1) {
++        out[at++] = (u8)b[--n];
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++/* A Digimon's name (already glyphs, 0xFF-ended, at most 13). */
++static s32 Stg40_FpGlyphName(const u8 *name, u8 *out, s32 at, s32 max) {
++    s32 i;
++
++    for (i = 0; i < 13 && name[i] != 0xFF && at < max - 1; i++) {
++        out[at++] = name[i];
++    }
++    out[at] = 0xFF;
++    return at;
++}
++
++#define FP_BOOST_PCT 1     /* % of won ? battles, and of floors with a ?, that give one */
++#define FP_TEXT_MAX 192
++
++static struct {
++    s32 sel;               /* 0..count-1 a party Digimon, count = None */
++    s32 count;
++    DigiRosterEntry *party[3];
++    s32 used;              /* the result: 1 used, 2 none */
++    s32 shown;             /* what the open prompt shows (rebuilt on a change) */
++    s32 frames;            /* frames the prompt has been up (no input in the first ones) */
++} Stg40_FpBoost;
++static u8 Stg40_FpBoostText[FP_TEXT_MAX];
++
++static s32 Stg40_FpBoostOk(const DigiRosterEntry *e) {
++    return e->level >= e->maxLevel && e->maxLevel < 99;
++}
++
++/* The prompt's text: a box, the title, the selected choice and a hint (3 lines). */
++static void Stg40_FpBoostBuild(s32 chest) {
++    u8 *t = Stg40_FpBoostText;
++    s32 n = 0;
++
++    t[n++] = 0xFA; /* the message box (as the dungeon's messages open it) */
++    t[n++] = 0x00;
++    n = Stg40_FpGlyphs("A LvlLimitBoostr! Use it on:^", t, n, FP_TEXT_MAX);
++    if (Stg40_FpBoost.sel < Stg40_FpBoost.count) {
++        DigiRosterEntry *e = Stg40_FpBoost.party[Stg40_FpBoost.sel];
++
++        n = Stg40_FpGlyphs("> ", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphName(e->name, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs(" Lv", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->level, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("/", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->maxLevel, t, n, FP_TEXT_MAX);
++        if (e->maxLevel >= 99) {
++            n = Stg40_FpGlyphs("^Its limit is already 99.", t, n, FP_TEXT_MAX);
++        } else if (e->level < e->maxLevel) {
++            n = Stg40_FpGlyphs("^Not at its level limit yet.", t, n, FP_TEXT_MAX);
++        } else {
++            n = Stg40_FpGlyphs("^{ Use   } None   Up/Down", t, n, FP_TEXT_MAX);
++        }
++    } else {
++        n = Stg40_FpGlyphs("> None^", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs(chest ? "{ Leave it in the chest" : "{ Leave it", t, n, FP_TEXT_MAX);
++    }
++    t[n] = 0xFF;
++}
++
++static void Stg40_FpBoostOpen(void) {
++    TextOpenArgs arg;
++
++    memset(&arg, 0, sizeof(arg));
++    arg.bigFont = 1;
++    arg.color = 0;
++    arg.x = 0;
++    arg.y = 0;
++    arg.charAdvance = 0;
++    arg.lineAdvance = 0xF;
++    arg.text = (s32)(sptr)Stg40_FpBoostText;
++    arg.charDelay = 0; /* shown at once: drawn whole each frame, so it can be rewritten */
++    arg.strArg0 = 0;
++    arg.strArg1 = 0;
++    Text_Open(&Stg40_MsgWinTexts[1], &arg);
++}
++
++/* The result message ((X) closes it). */
++static void Stg40_FpBoostResult(s32 chest) {
++    u8 *t = Stg40_FpBoostText;
++    s32 n = 0;
++    TextOpenArgs arg;
++
++    t[n++] = 0xFA;
++    t[n++] = 0x00;
++    if (Stg40_FpBoost.used == 1) {
++        DigiRosterEntry *e = Stg40_FpBoost.party[Stg40_FpBoost.sel];
++
++        n = Stg40_FpGlyphName(e->name, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("'s level limit^rose to ", t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphNum(e->maxLevel, t, n, FP_TEXT_MAX);
++        n = Stg40_FpGlyphs("!", t, n, FP_TEXT_MAX);
++    } else {
++        n = Stg40_FpGlyphs(chest ? "You left the LvlLimitBoostr^in the chest." : "You left the LvlLimitBoostr.", t,
++                           n, FP_TEXT_MAX);
++    }
++    t[n++] = 0xFB; /* wait for (X) */
++    t[n] = 0xFF;
++    memset(&arg, 0, sizeof(arg));
++    arg.bigFont = 1;
++    arg.color = 0;
++    arg.x = 0;
++    arg.y = 0;
++    arg.charAdvance = 0;
++    arg.lineAdvance = 0xF;
++    arg.text = (s32)(sptr)Stg40_FpBoostText;
++    arg.charDelay = 1;
++    arg.strArg0 = 0;
++    arg.strArg1 = 0;
++    Text_Open(&Stg40_MsgWinTexts[1], &arg);
++}
++
++/* The prompt, run by a player state (a0->stateLevel2 from 10 on): 0 while it runs, then 1 the
++ * item was used, 2 None. */
++s32 Stg40_FpBoostPrompt(void *actor, s32 chest) {
++    Actor *a0 = (Actor *)actor;
++    s32 i;
++
++    switch (a0->stateLevel2) {
++    case 10:
++    default:
++        Stg40_FpBoost.count = 0;
++        for (i = 0; i < 3; i++) {
++            if (Save_GameState.elems[i].state >= 3) {
++                Stg40_FpBoost.party[Stg40_FpBoost.count++] = &Save_GameState.elems[i];
++            }
++        }
++        Stg40_FpBoost.sel = Stg40_FpBoost.count; /* None, unless someone can take it */
++        for (i = Stg40_FpBoost.count - 1; i >= 0; i--) {
++            if (Stg40_FpBoostOk(Stg40_FpBoost.party[i])) {
++                Stg40_FpBoost.sel = i;
++            }
++        }
++        Stg40_FpBoost.used = 0;
++        Stg40_FpBoost.frames = 0;
++        Stg40_FpBoost.shown = Stg40_FpBoost.sel;
++        Stg40_FpBoostBuild(chest);
++        Stg40_FpBoostOpen();
++        Snd_PlayById(0x19, 0);
++        Task_SetState2(a0, 11);
++        return 0;
++    case 11:
++        if (++Stg40_FpBoost.frames < 8) {
++            return 0; /* let the box open, and the button that got here go */
++        }
++        if (Pad_State[0].up > 0 || Pad_State[0].left > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.sel == 0 ? Stg40_FpBoost.count : Stg40_FpBoost.sel - 1;
++        } else if (Pad_State[0].down > 0 || Pad_State[0].right > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.sel >= Stg40_FpBoost.count ? 0 : Stg40_FpBoost.sel + 1;
++        } else if (Pad_State[0].circle > 0) {
++            Stg40_FpBoost.sel = Stg40_FpBoost.count;
++            Stg40_FpBoost.used = 2;
++        } else if (Pad_State[0].cross > 0) {
++            if (Stg40_FpBoost.sel >= Stg40_FpBoost.count) {
++                Stg40_FpBoost.used = 2;
++            } else if (Stg40_FpBoostOk(Stg40_FpBoost.party[Stg40_FpBoost.sel])) {
++                Stg40_FpBoost.party[Stg40_FpBoost.sel]->maxLevel++;
++                Stg40_FpBoost.used = 1;
++            } else {
++                Snd_PlayById(0x1C, 0); /* can't: the bag-full sound */
++            }
++        }
++        if (Stg40_FpBoost.used != 0) {
++            Stg40_MsgWinClose(1);
++            Snd_PlayById(Stg40_FpBoost.used == 1 ? 0x19 : 0x13, 0);
++            Task_SetState2(a0, 12);
++            return 0;
++        }
++        if (Stg40_FpBoost.sel != Stg40_FpBoost.shown) {
++            /* the next choice: the open box's text is rewritten in place (the text engine
++             * reads it again each frame; its one command, the box, stays first and done) */
++            Snd_PlayById(0xC, 0);
++            Stg40_FpBoost.shown = Stg40_FpBoost.sel;
++            Stg40_FpBoostBuild(chest);
++        }
++        return 0;
++    case 12:
++        Stg40_FpBoostResult(chest);
++        Task_SetState2(a0, 13);
++        return 0;
++    case 13:
++        if (Stg40_MsgWinCloseIfDone(1) == 1) {
++            return Stg40_FpBoost.used;
++        }
++        return 0;
++    }
++}
++
++/* Battle start (stag4000.c, the encounter): which party, and whether it shows as a ?. */
++void Stg40_FpNoteBattle(void *ent) {
++    Stg40Ent48 *e = (Stg40Ent48 *)ent;
++    sptr off = (sptr)e->params - (sptr)Dung_StatePtr->parties[0];
++    s32 idx = (s32)(off / (sptr)sizeof(Dung_StatePtr->parties[0]));
++
++    Host_FpSetNote(FP_NOTE_WON, 0);
++    Host_FpSetNote(FP_NOTE_BATTLE, FP_NOTE_VALID | (idx & 0xFF) | (Stg40_FpMystery(e) ? FP_NOTE_BATTLE_MYST : 0));
++}
++
++/* Back from a battle (once): a won ? battle gives a LvlLimitBoostr 1 % of the time. */
++s32 Stg40_FpBattleBoostDue(void) {
++    s32 b = Host_FpGetNote(FP_NOTE_BATTLE);
++    s32 won = Host_FpGetNote(FP_NOTE_WON);
++
++    Host_FpSetNote(FP_NOTE_BATTLE, 0);
++    Host_FpSetNote(FP_NOTE_WON, 0);
++    return (b & FP_NOTE_VALID) && (b & FP_NOTE_BATTLE_MYST) && won != 0 && Host_FpRandom() % 100 < FP_BOOST_PCT;
++}
++
++/* After Stg40_SpawnChests on a new floor: on 1 % of floors with a ? party, one chest holds a
++ * LvlLimitBoostr. */
++void Stg40_FpRollChestBoost(void) {
++    s32 mode = Host_FpMystery();
++    s32 any = 0;
++    s32 i;
++
++    Host_FpSetNote(FP_NOTE_CHEST, 0);
++    for (i = 0; i < Dung_StatePtr->partyCount && i < FP_NOTE_PARTIES; i++) {
++        any |= Stg40_FpMysteryIdx(i, mode);
++    }
++    if (any && Dung_StatePtr->chestCount > 0 && Host_FpRandom() % 100 < FP_BOOST_PCT) {
++        Host_FpSetNote(FP_NOTE_CHEST, FP_NOTE_VALID | (s32)(Host_FpRandom() % Dung_StatePtr->chestCount));
++    }
++}
++
++/* The chest record (Stg40_SpawnChests: chests[n + 1]) holds a LvlLimitBoostr. */
++s32 Stg40_FpChestHasBoost(void *rec) {
++    s32 v = Host_FpGetNote(FP_NOTE_CHEST);
++
++    return (v & FP_NOTE_VALID) && (u8 *)rec == Dung_StatePtr->chests[(v & 0xFF) + 1];
++}
++
++/* The chest's LvlLimitBoostr was used. */
++void Stg40_FpChestBoostTaken(void) {
++    Host_FpSetNote(FP_NOTE_CHEST, 0);
++}
++
+ /* POLY_G3 (gouraud flat triangle), 0x1C bytes, 6 words after the tag. */
+ typedef struct {
+     Stg40Tag tag;
+diff --git a/src/stag4000/player.c b/src/stag4000/player.c
+index b20e539..a5f74d5 100644
+--- a/src/stag4000/player.c
++++ b/src/stag4000/player.c
+@@ -556,6 +556,19 @@ void Stg40_PlayerInput(Actor *a0) {
+ void Stg40_PlayerResumeAfterBattle(Actor *a0) {
+     Stg40Ent48 *e = ((Stg40ActWork *)a0->work)->ent;
+ 
++#ifdef DW2_NATIVE
++    /* FP: a won ? battle may give a LvlLimitBoostr, offered before play goes on */
++    if (a0->stateLevel2 >= 10) {
++        if (Stg40_FpBoostPrompt(a0, 0) != 0) {
++            Task_SetState2(a0, 2);
++        }
++        return;
++    }
++    if (a0->stateLevel2 == 2 && Dung_StatePtr->freeze == 0 && Stg40_FpBattleBoostDue()) {
++        Task_SetState2(a0, 10);
++        return;
++    }
++#endif
+     switch (a0->stateLevel2) {
+     case 0:
+     default:
+@@ -1103,6 +1116,27 @@ void Stg40_PlayerTakeChestItem(Actor *a0) {
+     Actor *t = Stg40_RootState->targetActor;
+     u8 *d = Stg40_RootState->targetEnt->params;
+ 
++#ifdef DW2_NATIVE
++    /* FP: a LvlLimitBoostr in this chest: used at once on a party Digimon (the chest opens),
++     * or None (it stays in the chest, which stays closed, as with a full bag) */
++    if (a0->stateLevel2 >= 10 || (a0->stateLevel2 == 0 && Stg40_FpChestHasBoost(d))) {
++        if (a0->stateLevel2 == 0) {
++            Task_SetState2(a0, 10);
++        }
++        switch (Stg40_FpBoostPrompt(a0, 1)) {
++        case 1:
++            Stg40_FpChestBoostTaken();
++            Task_SetState1(t, 5);
++            Task_SetState1(a0, 6);
++            break;
++        case 2:
++            d[1] = 0xFF; /* its trap is dealt with, as when the bag is full */
++            Task_SetState1(a0, 6);
++            break;
++        }
++        return;
++    }
++#endif
+     switch (a0->stateLevel2) {
+     case 0:
+     default:
+diff --git a/src/stag4000/stag4000.c b/src/stag4000/stag4000.c
+index 39fa383..f1efc9d 100644
+--- a/src/stag4000/stag4000.c
++++ b/src/stag4000/stag4000.c
+@@ -1,5 +1,8 @@
+ #include "common.h"
+ #include "stag4000/stag4000.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptors come first). Not
+  * stag4000_funcs.h: Stg40_SetupStage calls Stg40_InitDungeonEntry before its K&R definition. */
+@@ -168,6 +171,9 @@ void Stg40_SetupStage(Actor *a0) {
+         }
+         Stg40_SpawnEnemyParties();
+         Stg40_SpawnChests();
++#ifdef DW2_NATIVE
++        Stg40_FpRollChestBoost(); /* FP: a LvlLimitBoostr in a chest, on 1 % of floors with a ? */
++#endif
+         Stg40_SpawnFixedHazards();
+         Stg40_ApplyTrapCells();
+         Stg40_SpawnRandomHazards();
+@@ -244,6 +250,9 @@ s32 Stg40_BeginTransition(Actor *arg0) {
+         }
+         Dung_StatePtr->giftLevel = q;
+         Sys_State.modeArg = ((Stg40EnemyParty *)*slot)->setId;
++#ifdef DW2_NATIVE
++        Stg40_FpNoteBattle(e); /* FP: which party, and whether it was a ? */
++#endif
+         if (((Stg40EnemyParty *)*slot)->useDungeonBgm != 0) {
+             if (Flag_Test(0x88) != 0 && Dung_StatePtr->dungeon.battleBgmId == 0x100) {
+                 a0v = 0x101;
+-- 
+2.43.0
+

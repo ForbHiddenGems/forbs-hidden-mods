@@ -1,0 +1,92 @@
+From 2f08acb4e998dafec95e9968eb54a3487f197e8e Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Thu, 29 Oct 2026 12:25:18 +0000
+Subject: [PATCH 23/26] Battle digivolution: faster spin, DP row in the name
+ strip's grain
+
+The spin is 1.5 times as fast. The DP row's background is now the name
+strip's fine grain of three blues (fixed, drawn as runs) instead of a flat
+blue, so the row reads as the name strip continued.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ src/stag3000/evo_native.inc | 50 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index 55ccc1e..c2661a6 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -407,7 +407,7 @@ static s32 Stg30_EvoSequence(void) {
+         /* it spins, faster and faster up to the change, then slows to face the front again */
+         Stg30EvoXform *o = (Stg30EvoXform *)f->u38.ptr38;
+         s32 t = Stg30_EvoSeqTimer;
+-        s32 v = t < EVO_SWAP_AT ? 0x18 + t * 6 : EVO_FX_FRAMES - t > 0 ? 0x18 + (EVO_FX_FRAMES - t) * 6 : 0x30;
++        s32 v = t < EVO_SWAP_AT ? 0x24 + t * 9 : EVO_FX_FRAMES - t > 0 ? 0x24 + (EVO_FX_FRAMES - t) * 9 : 0x48;
+ 
+         if (o != NULL) {
+             if (t < EVO_FX_FRAMES || ((o->rotY - w->facing) & 0xFFF) > v) {
+@@ -545,6 +545,52 @@ static void Stg30_EvoGauge(GfxPartOTag *ot, s32 x, s32 y, s32 fill, const u32 *r
+     Stg30_EvoTile(ot, x, y + 4, EVO_GAUGE_W, 1, 0x0C2567);
+ }
+ 
++/* The name strip's background: a fine grain of three blues. The same grain (fixed, made once)
++ * fills the DP row so that it reads as the name strip continued; runs of a colour as one tile. */
++#define EVO_NOISE_W 96
++#define EVO_NOISE_H 10
++static u8 Stg30_EvoNoise[EVO_NOISE_H][EVO_NOISE_W];
++static s32 Stg30_EvoNoiseReady;
++
++static void Stg30_EvoNoiseFill(GfxPartOTag *ot, s32 x, s32 y, s32 w, s32 h) {
++    static const u32 blues[3] = { 0x304888, 0x405888, 0x385088 };
++    s32 i;
++    s32 j;
++    s32 k;
++
++    if (!Stg30_EvoNoiseReady) {
++        u32 r = 0x2B9D5;
++
++        for (j = 0; j < EVO_NOISE_H; j++) {
++            for (i = 0; i < EVO_NOISE_W;) {
++                s32 c;
++                s32 n;
++
++                r = r * 1103515245u + 12345u;
++                c = (r >> 16) % 3;
++                n = 1 + ((r >> 20) & 3); /* runs of 1 to 4, as in the game's */
++                for (k = 0; k < n && i < EVO_NOISE_W; k++) {
++                    Stg30_EvoNoise[j][i++] = (u8)c;
++                }
++            }
++        }
++        Stg30_EvoNoiseReady = 1;
++    }
++    if (w > EVO_NOISE_W) {
++        w = EVO_NOISE_W;
++    }
++    if (h > EVO_NOISE_H) {
++        h = EVO_NOISE_H;
++    }
++    for (j = 0; j < h; j++) {
++        for (i = 0; i < w; i = k) {
++            for (k = i + 1; k < w && Stg30_EvoNoise[j][k] == Stg30_EvoNoise[j][i]; k++) {
++            }
++            Stg30_EvoTile(ot, x + i, y + j, k - i, 1, blues[Stg30_EvoNoise[j][i]]);
++        }
++    }
++}
++
+ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+     static const u32 green[4] = { 0x04461C, 0xCAFBE2, 0x25FB88, 0x04461C };  /* the HP gauge's rows */
+     static const u32 gold[4] = { 0x463A04, 0xFFF6C8, 0xFBC825, 0x463A04 };
+@@ -619,5 +665,5 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+     Stg30_EvoTile(ot, x + EVO_BOX_W - 3, y, 1, EVO_ROW_H - 4, 0x525252);
+     Stg30_EvoTile(ot, x + EVO_BOX_W - 2, y, 1, EVO_ROW_H - 3, 0x001873);
+     Stg30_EvoTile(ot, x + EVO_BOX_W - 1, y, 1, EVO_ROW_H - 4, 0x525252);
+-    Stg30_EvoTile(ot, x + 3, y, EVO_BOX_W - 6, EVO_ROW_H - 4, 0x4A638C);
++    Stg30_EvoNoiseFill(ot, x + 3, y, EVO_BOX_W - 6, EVO_ROW_H - 4);
+ }
+-- 
+2.43.0
+

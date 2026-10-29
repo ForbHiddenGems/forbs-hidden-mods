@@ -1,0 +1,1432 @@
+From fbe348a37441ab9351f4202404856439b7d9c372 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Sun, 25 Oct 2026 21:58:37 +0000
+Subject: [PATCH 01/26] First-person domains (F4): camera in the Digi-Beetle,
+ clipped fogged floor, relative controls
+
+Native-only (DW2_NATIVE); the PS1 matching build is unchanged. See doc/FPVIEW.md.
+---
+ README.md                      |   1 +
+ doc/FPVIEW.md                  |  59 ++++
+ host/host.h                    |   6 +
+ host/main.c                    |  11 +-
+ host/sdl.c                     |  33 ++-
+ host/settings.c                |  10 +-
+ host/settings.h                |   1 +
+ host/settingsui.cpp            |   6 +
+ host/ui.cpp                    |   2 +-
+ include/stag4000/fpview.h      |  44 +++
+ src/stag4000/camera.c          |  11 +
+ src/stag4000/floor.c           |  29 ++
+ src/stag4000/fpview_math.inc   | 252 ++++++++++++++++
+ src/stag4000/fpview_native.inc | 512 +++++++++++++++++++++++++++++++++
+ src/stag4000/linkedmodel.c     |  10 +
+ src/stag4000/obj.c             |  48 +++-
+ src/stag4000/player.c          |  12 +
+ 17 files changed, 1033 insertions(+), 14 deletions(-)
+ create mode 100644 doc/FPVIEW.md
+ create mode 100644 include/stag4000/fpview.h
+ create mode 100644 src/stag4000/fpview_math.inc
+ create mode 100644 src/stag4000/fpview_native.inc
+
+diff --git a/README.md b/README.md
+index f4b8c53..c49fc7e 100644
+--- a/README.md
++++ b/README.md
+@@ -166,6 +166,7 @@ Default bindings (change them in the F1 settings window):
+ |---|---|
+ | F1 | Settings window (Esc closes it). Holding Select (Backspace, or Back / Select on a gamepad) for 1 second opens it too; Start or Select on a gamepad closes it |
+ | F3 | Speed-up on / off ("Speed unlocked" / "Speed locked") |
++| F4 | First-person domains on / off ([doc/FPVIEW.md](doc/FPVIEW.md)) |
+ | F5 | Render scale 1x .. 8x |
+ | F6 | No wobble on / off |
+ | F7 | 16:9 on / off |
+diff --git a/doc/FPVIEW.md b/doc/FPVIEW.md
+new file mode 100644
+index 0000000..f65207f
+--- /dev/null
++++ b/doc/FPVIEW.md
+@@ -0,0 +1,59 @@
++# First-person domains (FP)
++
++A native-only mod for the PC port: the camera sits in the Digi-Beetle and looks along its
++facing while you explore the domains. Toggle it with **F4** or in **F1 > Display > First-person
++domains**. It is saved as `fpview = 1` in `settings.ini`, or set for one run with `--fpview`.
++
++## Controls in first person
++
++| Pad | Does |
++| --- | --- |
++| Up | Step forward |
++| Left / Right | Turn 90 degrees on the spot |
++| Down | Turn around |
++| Up + Left / Right | Step diagonally forward (the view keeps facing ahead) |
++| Cross, Square, Select ... | As before; Cross acts on the tile you face |
++
++The beetle turns back to the view after a diagonal step, so Cross always acts on what is in
++front of you.
++
++## How it works
++
++Everything is presentation. Turns, RNG, the retail draw window and the game's own state run as
++before, and the PS1 matching build is untouched: every change is inside `#ifdef DW2_NATIVE`
++(the retail-preprocessed sources of the five touched stag4000 files are identical).
++
++- **Camera** (`Stg40_FpSetCamera`, called from `Stg40_CameraUpdate`): `GsSetRefView2` from the
++  beetle's position at eye height, looking along a yaw that eases toward the facing octant. The
++  camera scripts keep running underneath (the game waits on `Stg40_CamIsMoving`).
++- **Floor** (`Stg40_FpDrawFloor`, replacing the retail 9x9 window): every cell out to
++  `STG40_FP_RADIUS` tiles, nearest first. Each tile top and wall is clipped in world space
++  against the near plane and a guard band around the screen, then projected by the GTE vertex
++  by vertex (so the PGXP hook records them and the HD renderer draws them perspective-correct),
++  and sent as `POLY_GT3` fans, faded to black with distance. The packets go into the mod's own
++  double-buffered area, a static array inside the 16 MB window the 24-bit OT links reach, so
++  the floor never takes room from the game's models. Without precise geometry (no wobble and
++  smooth frames both off) floors are cut 2 x 2 and walls 2 x 1 against affine texture warp.
++- **Walls** keep the retail templates and the retail cull rule (`Stg40_DrawTileWalls`), so
++  walled floors show walls from inside, and platform floors (cliffs going down) show the
++  cliffs that face you.
++- **Square tiles**: retail rows are 0x800 deep and columns 0xA00 wide (made for the angled
++  overhead camera). In first person both are 0xA00, and entity positions go through
++  `Stg40_FpWorldX / Z` to match. The FP world is centred on the beetle.
++- **Entities** beyond the retail 5-tile window are drawn through the 16:9 side models
++  (out to the radius). Models behind the eye are dropped by the GTE error flags per bone.
++- **The beetle** and the models linked to it are not drawn (their anims still run).
++
++## Tuning
++
++`src/stag4000/fpview_math.inc`: `FP_EYE` (eye height), `FP_H` (projection, about 80 degrees),
++`FP_PITCH` (look down), `FP_FOG_START / END`, `STG40_FP_RADIUS` (in `fpview.h`),
++`FP_TURN_STEP` (turn speed).
++
++## Known limits
++
++- No ceilings: above the walls is the black background.
++- Camera scripts (floor intro, scrolls to a target when shooting a Gift or reading enemy info)
++  are not shown; the view stays in the beetle.
++- Entities far from the beetle need their files in the CD cache, as the 16:9 side columns do.
++- Smooth frames do not blend the dungeon while in first person (30 fps there).
+diff --git a/host/host.h b/host/host.h
+index 20de1e5..1960be8 100644
+--- a/host/host.h
++++ b/host/host.h
+@@ -85,6 +85,12 @@ void Host_SmoothScene(void);
+  * values (n <= 16) and whether it is a shot set at once (hard: a change is a cut) or a camera that
+  * moves smoothly (backend/pgxp.h Pgxp_Camera). */
+ void Host_SmoothCamera(const int *v, int n, int hard);
++/* FP: first-person view in the domains (F4, settings "fpview"); the game C reads it each frame
++ * (src/stag4000/fpview_native.inc). */
++void Host_SetFpView(int on);
++int Host_FpView(void);
++/* The HD renderer draws precise, perspective-correct polygons now (no wobble or smooth frames). */
++int Host_PreciseGeometry(void);
+ /* PG.3, for the game C (DW2_NATIVE): extra screen pixels on each side of a picture `width` wide
+  * in 16:9 (0 in 4:3), so culls can let objects into the sides; and a mark that the frame being
+  * built is a 2D picture that keeps black sides (pillarbox). */
+diff --git a/host/main.c b/host/main.c
+index 335595d..53b1e5d 100644
+--- a/host/main.c
++++ b/host/main.c
+@@ -31,7 +31,7 @@
+  *
+  *   dw2 [IMAGE] [--disc IMAGE] [--pak PATH] [--vblanks N] [--no-window] [--shot-dir DIR] [--shot-at N]... [--shot-vb N]...
+  *       [--hold-boot N] [--press N:BUTTONS[:LEN]]... [--press2 N:BUTTONS[:LEN]]... [--save-dir DIR]
+- *       [--fast] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--renderer gpu|soft]
++ *       [--fast] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--fpview] [--renderer gpu|soft]
+  *       [--settings PATH] [--settings-set KEY=VALUE]... [--settings-ui] [--settings-tab T] [--ui-shots] [--quit-dialog]
+  *       [--no-update-check] [--update-check] [--version]
+  *       [--movies] [--window-mode M] [--fullscreen] [--windowed]
+@@ -381,6 +381,7 @@ static void run_threaded(void) {
+ HOST_ENTRY int main(int argc, char **argv) {
+     int i;
+     int cl_scale = 0, cl_wide = 0, cl_pgxp = 0, cl_renderer = 0, cl_window = -1, cl_sharpen = -1, cl_smooth = 0;
++    int cl_fpview = 0;
+     int update_force = 0;
+ 
+ #ifdef _WIN32
+@@ -458,6 +459,8 @@ HOST_ENTRY int main(int argc, char **argv) {
+             cl_pgxp = 1;
+         } else if (strcmp(argv[i], "--smooth") == 0) {
+             cl_smooth = 1;
++        } else if (strcmp(argv[i], "--fpview") == 0) {
++            cl_fpview = 1;
+         } else if (strcmp(argv[i], "--wide") == 0) {
+             Host_SetWide(1);
+             cl_wide = 1;
+@@ -484,7 +487,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+             fprintf(stderr,
+                     "usage: %s [IMAGE] [--disc IMAGE] [--pak PATH] [--vblanks N] [--no-window] [--shot-dir DIR] [--shot-at N]... "
+                     "[--shot-vb N]... [--hold-boot N] [--press N:BUTTONS[:LEN]]... [--press2 N:BUTTONS[:LEN]]... "
+-                    "[--save-dir DIR] [--fast] [--speed-up] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] "
++                    "[--save-dir DIR] [--fast] [--speed-up] [--pad2-keys] [--scale N] [--sharpen N] [--hd-threads N] [--pgxp] [--wide] [--smooth] [--fpview] "
+                     "[--renderer gpu|soft] [--settings PATH] [--settings-set KEY=VALUE]... [--settings-ui] [--settings-tab T] [--ui-shots] [--quit-dialog] [--no-update-check] [--update-check] [--update-as V] [--update-auto] [--version] "
+                     "[--movies] [--window-mode windowed|borderless|exclusive] [--fullscreen] [--windowed]%s\n",
+                     argv[0], DW2_DEV ? " [--start-mode N] [--devui] [--devui-tab T] [--window-size W H] [--devedit N:KIND=ARGS]..." : "");
+@@ -514,6 +517,9 @@ HOST_ENTRY int main(int argc, char **argv) {
+     if (cl_smooth) {
+         Settings_Override(SET_SMOOTH, 1);
+     }
++    if (cl_fpview) {
++        Settings_Override(SET_FPVIEW, 1);
++    }
+     Settings_Load(no_window);
+     if (!cl_scale) {
+         PsxHd_SetScale(Settings_Get(SET_SCALE));
+@@ -528,6 +534,7 @@ HOST_ENTRY int main(int argc, char **argv) {
+     if (Settings_Get(SET_SMOOTH)) {
+         Host_SetSmooth(1); /* PR.34, also with --smooth */
+     }
++    Host_SetFpView(Settings_Get(SET_FPVIEW)); /* FP, also with --fpview */
+     if (!cl_renderer && Settings_Get(SET_RENDERER) == SET_RENDERER_SOFT) {
+         Host_SetRenderer(1);
+     }
+diff --git a/host/sdl.c b/host/sdl.c
+index 6e936ad..3185bd9 100644
+--- a/host/sdl.c
++++ b/host/sdl.c
+@@ -64,7 +64,7 @@
+ #define SLOTS 3
+ 
+ enum { REQ_SCALE = 1, REQ_WIDE = 2, REQ_PGXP = 4, REQ_SHOT = 8, REQ_QUIT = 16, REQ_SETTING = 32, REQ_SHARPEN = 64,
+-       REQ_SPEED = 128, REQ_SMOOTH = 256 };
++       REQ_SPEED = 128, REQ_SMOOTH = 256, REQ_FPVIEW = 512 };
+ 
+ typedef struct {
+     int kind;      /* 0 black, 1 1x picture, 2 software HD picture, 3 GPU texture */
+@@ -109,6 +109,7 @@ static SDL_AtomicInt on_title; /* PR.10: the game thread saw the title scene at
+ static int last_sharpen = 50;  /* F8 turns sharpening back on at this strength */
+ static const char *volatile quit_why = "window closed";
+ static SDL_AtomicInt smooth_on;  /* PR.34: smooth frames active (game side sets it) */
++static SDL_AtomicInt fp_view;    /* FP: first-person view in the domains (F4), read by the game C */
+ static int shown_vsync;          /* main thread: the renderer's vsync */
+ static int vsync_ok = 1;         /* main thread: vsync could be turned on */
+ static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
+@@ -496,6 +497,21 @@ void Host_SmoothLayer(int id, const void *start, const void *end, int x, int y)
+     PsxHd_SmoothLayer(id, (uintptr_t)start, (uintptr_t)end, x, y);
+ }
+ 
++/* Game side: the HD renderer draws precise, perspective-correct polygons (no wobble, or smooth
++ * frames, which draw no wobble too: backend/psxgpu.c). */
++int Host_PreciseGeometry(void) {
++    return PsxHd_Pgxp() || PsxHd_SmoothActive();
++}
++
++/* FP, game side (or before the game runs). */
++void Host_SetFpView(int on) {
++    SDL_SetAtomicInt(&fp_view, on != 0);
++}
++
++int Host_FpView(void) {
++    return SDL_GetAtomicInt(&fp_view);
++}
++
+ void Host_SmoothLattice(int px, int py, int pz) {
+     Pgxp_Lattice(px, py, pz);
+ }
+@@ -933,6 +949,9 @@ void Host_PumpEvents(void) {
+                 if (e.key.scancode == SDL_SCANCODE_F9) {
+                     request(REQ_SMOOTH);
+                 }
++                if (e.key.scancode == SDL_SCANCODE_F4) {
++                    request(REQ_FPVIEW);
++                }
+                 if (e.key.scancode == SDL_SCANCODE_F3) {
+                     request(REQ_SPEED);
+                 }
+@@ -1019,6 +1038,11 @@ void Host_GameEvents(void) {
+                    PsxHd_Smooth() && !PsxHd_Gpu() ? ": needs the GPU renderer" : "");
+             Settings_Set(SET_SMOOTH, PsxHd_Smooth());
+         }
++        if ((v = SDL_SetAtomicInt(&wanted[SET_FPVIEW], 0)) != 0 && v - 1 != Host_FpView()) {
++            Host_SetFpView(v - 1);
++            printf("[host] first-person view %s (F1)\n", Host_FpView() ? "on" : "off");
++            Settings_Set(SET_FPVIEW, Host_FpView());
++        }
+         fflush(stdout);
+     }
+     if (r & REQ_SHARPEN) {
+@@ -1044,6 +1068,13 @@ void Host_GameEvents(void) {
+         Settings_Set(SET_SMOOTH, PsxHd_Smooth());
+         fflush(stdout);
+     }
++    if (r & REQ_FPVIEW) {
++        Host_SetFpView(!Host_FpView());
++        printf("[host] first-person view %s (F4)\n", Host_FpView() ? "on" : "off");
++        notice("First-person domains %s (F4)", Host_FpView() ? "on" : "off");
++        Settings_Set(SET_FPVIEW, Host_FpView());
++        fflush(stdout);
++    }
+     if (r & REQ_SPEED) {
+         Host_SpeedSet(!Host_SpeedOn());
+         if (!Host_SpeedOn()) {
+diff --git a/host/settings.c b/host/settings.c
+index b96fac8..59bd946 100644
+--- a/host/settings.c
++++ b/host/settings.c
+@@ -46,11 +46,11 @@ const int Settings_ButtonOrder[16] = {
+ static const char *const int_keys[SET_COUNT] = {
+     "scale", "wide", "pgxp", "renderer", "volume", "stick_dpad", "window_mode", "fullscreen_display", "window_maximized",
+     "sharpen", "title_hint", "speed", "update_check", "smooth",
+-    "select_hold_menu",
++    "select_hold_menu", "fpview",
+ };
+-static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1 };
+-static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+-static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1 };
++static const int int_default[SET_COUNT] = { 1, 0, 0, SET_RENDERER_GPU, 100, 1, SET_WINDOW_WINDOWED, 0, 0, 0, 1, 3, 1, 1, 1, 0 };
++static const int int_min[SET_COUNT] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++static const int int_max[SET_COUNT] = { 8, 1, 1, 1, 100, 1, 2, 16, 1, 100, 1, 8, 1, 1, 1, 1 };
+ static const char *const renderer_names[] = { "gpu", "soft", NULL };
+ static const char *const window_names[] = { "windowed", "borderless", "exclusive", NULL };
+ /* values written as names instead of numbers */
+@@ -266,7 +266,7 @@ void Settings_SetPad(int bit, int code) {
+ int Settings_KeyReserved(int sc) {
+     return sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_F2 ||
+            sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
+ }
+ 
+ const char *Settings_ButtonName(int bit) {
+diff --git a/host/settings.h b/host/settings.h
+index c7b2372..9a209fa 100644
+--- a/host/settings.h
++++ b/host/settings.h
+@@ -26,6 +26,7 @@ enum {
+     SET_UPDATE_CHECK, /* 0 / 1: PR.30 ask GitHub for a newer release at start */
+     SET_SMOOTH,       /* 0 / 1: PR.34 smooth frames (F9), on by default */
+     SET_SELECT_HOLD,  /* 0 / 1: PR.38 Select held 1 s opens F1 (issue #5), on by default */
++    SET_FPVIEW,       /* 0 / 1: FP first-person view in the domains (F4), off by default */
+     SET_COUNT
+ };
+ enum { SET_RENDERER_GPU, SET_RENDERER_SOFT };
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 37ec55d..e86a0e0 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -201,6 +201,7 @@ void display_tab(void) {
+     int renderer = Settings_Get(SET_RENDERER);
+     int sharpen = Settings_Get(SET_SHARPEN);
+     bool smooth = Settings_Get(SET_SMOOTH) != 0;
++    bool fpview = Settings_Get(SET_FPVIEW) != 0;
+     bool hint = Settings_Get(SET_TITLE_HINT) != 0;
+ 
+     ImGui::SeparatorText("Picture");
+@@ -228,6 +229,11 @@ void display_tab(void) {
+     }
+     ImGui::TextDisabled("Pictures at the monitor's refresh rate, blended between game frames in the");
+     ImGui::TextDisabled("city, dungeons and battles (GPU renderer). The game itself runs as before.");
++    if (ImGui::Checkbox("First-person domains (F4)", &fpview)) {
++        Host_RequestSetting(SET_FPVIEW, fpview);
++    }
++    ImGui::TextDisabled("Look out of the Digi-Beetle in the domains. Up moves forward, Left / Right");
++    ImGui::TextDisabled("turn, Down turns around, Up + Left / Right steps diagonally.");
+     if (ImGui::Checkbox("Show \"Press F1 for settings\" on the title", &hint)) {
+         Settings_Set(SET_TITLE_HINT, hint);
+     }
+diff --git a/host/ui.cpp b/host/ui.cpp
+index f0e5eaf..b6c977d 100644
+--- a/host/ui.cpp
++++ b/host/ui.cpp
+@@ -220,7 +220,7 @@ void write_shot(void) {
+ 
+ bool is_hotkey(SDL_Scancode sc) {
+     return sc == SDL_SCANCODE_F3 || sc == SDL_SCANCODE_F5 || sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F7 || sc == SDL_SCANCODE_F8 ||
+-           sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
++           sc == SDL_SCANCODE_F4 || sc == SDL_SCANCODE_F9 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12;
+ }
+ 
+ } // namespace
+diff --git a/include/stag4000/fpview.h b/include/stag4000/fpview.h
+new file mode 100644
+index 0000000..ba319e5
+--- /dev/null
++++ b/include/stag4000/fpview.h
+@@ -0,0 +1,44 @@
++#ifndef STAG4000_FPVIEW_H
++#define STAG4000_FPVIEW_H
++
++/* FP: first-person view in the domains (native build only, F4 / settings "fpview").
++ *
++ * The camera sits in the Digi-Beetle and looks along its facing; the floor and its walls are
++ * drawn by Stg40_FpDrawFloor (floor.c) instead of the retail 9x9 window: cells all around the
++ * beetle out to STG40_FP_RADIUS, clipped against the near plane and the screen guard band in
++ * world space before the GTE projects them, so nothing behind the camera reaches the GTE, and
++ * faded to black with distance. Tiles are made square in this view (z * 40 like x, retail
++ * z * 32): entity positions go through Stg40_FpWorldX / Stg40_FpWorldZ for that.
++ *
++ * Presentation only: game state, turns, RNG and the retail window logic run as before. The
++ * pad mapping in Stg40_PlayerTryMove becomes relative to the facing (Up forward, Left / Right
++ * turn 90 degrees, Down turns around, Up + Left / Right steps diagonally). */
++
++#ifdef DW2_NATIVE
++
++#define STG40_FP_RADIUS 8 /* tiles drawn around the beetle */
++
++/* The view is on (setting) and the dungeon has a player to look from. */
++s32 Stg40_FpActive(void);
++/* World x / z (s16 range) of a map position for models: player-centred and square in FP,
++ * the retail view-centred values otherwise. */
++s32 Stg40_FpWorldX(s32 posX);
++s32 Stg40_FpWorldZ(s32 posY);
++/* A map position too far from the player for s16 world coordinates in FP. */
++s32 Stg40_FpOutOfRange(s32 posX, s32 posY);
++/* The entity / actor is the player, hidden in FP (the camera is inside it). */
++s32 Stg40_FpHidesEnt(void *ent);
++s32 Stg40_FpHidesActor(void *actor);
++/* The pad as an absolute octant 0..7 for Stg40_PlayerTryMove, or -1 = no step this frame
++ * (turns in place are applied to the entity here). */
++s32 Stg40_FpPadOctant(void *ent);
++/* camera.c: GsWSMATRIX / projection for this frame from inside the beetle. */
++void Stg40_FpSetCamera(void *cameraWork);
++/* floor.c */
++void Stg40_FpDrawFloor(void *floorWork);
++void Stg40_FpDrawShadow(void *loc);
++void Stg40_FpReset(void);
++
++#endif
++
++#endif /* STAG4000_FPVIEW_H */
+diff --git a/src/stag4000/camera.c b/src/stag4000/camera.c
+index 1081913..58c53ed 100644
+--- a/src/stag4000/camera.c
++++ b/src/stag4000/camera.c
+@@ -15,6 +15,9 @@
+ #include "stag4000/spawn.h"
+ #include "stag4000/automap.h"
+ #include "stag4000/camera.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ TaskDesc Stg40_CameraDesc = {
+     (TaskInitFn)Stg40_CameraInit, Stg40_CameraUpdate, Task_DefaultDestroy, (TaskFn)Stg40_CameraDraw, 0x274, 0,
+@@ -129,6 +132,14 @@ void Stg40_CameraUpdate(Actor *a0) {
+             break;
+         }
+         w->dirty = 0;
++#ifdef DW2_NATIVE
++        if (Stg40_FpActive()) {
++            /* FP: the scripts above still run (Stg40_CamIsMoving waits on them); the view is
++             * the beetle's */
++            Stg40_FpSetCamera(w);
++            break;
++        }
++#endif
+         RotMatrixYXZ(w->rot, &w->coord.coord);
+         w->coord.coord.t[0] = w->originX;
+         w->coord.coord.t[1] = w->originY;
+diff --git a/src/stag4000/floor.c b/src/stag4000/floor.c
+index fda9c22..6dcba03 100644
+--- a/src/stag4000/floor.c
++++ b/src/stag4000/floor.c
+@@ -7,6 +7,7 @@
+ /* declared with its return type (an implicit int declaration reads the unextended high bits
+  * natively) */
+ u16 Rand_GetAt(u32 arg0);
++#include "stag4000/fpview.h"
+ #endif
+ 
+ u8 Stg40_FloorPrimIdx[] = {
+@@ -88,6 +89,12 @@ void Stg40_DrawEntityShadow(Stg40Loc *loc) {
+     s32 centerX;
+     s32 centerY;
+ 
++#ifdef DW2_NATIVE
++    if (Stg40_FpActive()) { /* FP: no retail grid this frame; clipped like the floor */
++        Stg40_FpDrawShadow(loc);
++        return;
++    }
++#endif
+     if ((loc->posX & 0x3F) == 0 && (loc->posY & 0x3F) == 0) {
+         col = loc->posX / 64 - Stg40_RootState->viewX / 64 + 4 + STG40_WIDE;
+         row = loc->posY / 64 - Stg40_RootState->viewY / 64 + 4;
+@@ -643,6 +650,9 @@ void Stg40_FloorInit(Actor *a0, s32 *ids) {
+ 
+     Stg40_FloorTask = a0;
+     Stg40_FloorWork = w;
++#ifdef DW2_NATIVE
++    Stg40_FpReset(); /* FP: a new floor takes the facing from the beetle again */
++#endif
+     w->texCount = 0;
+     w->primCount = 0;
+     for (i = 0; i < 2; i++) {
+@@ -696,6 +706,11 @@ void Stg40_FloorUpdate(Actor *a0) {
+         break;
+     case 1:
+         Stg40_ScrollUpdate(a0);
++#ifdef DW2_NATIVE
++        if (Stg40_FpActive()) {
++            break; /* FP: the retail grid would project points behind the camera */
++        }
++#endif
+         Stg40_ProjectGrid((Stg40FloorWork *)w);
+         Stg40_FillTileCache(w);
+         break;
+@@ -714,6 +729,16 @@ void Stg40_FloorDraw(Actor *a0) {
+         f = 0;
+     }
+ #ifdef DW2_NATIVE
++    if (Stg40_FpActive()) {
++        /* FP: own floor; not a lattice, so no frames drawn again in between */
++        if (f) {
++            Stg40_FpDrawFloor(w);
++        }
++        for (p = w->texIds; *p != -1; p++) {
++            Gfx_FindOrLoadTexSlot(*p);
++        }
++        return;
++    }
+     Host_SmoothScene(); /* PR.34: dungeon frames are drawn again between frames */
+ #endif
+     if (f) {
+@@ -723,3 +748,7 @@ void Stg40_FloorDraw(Actor *a0) {
+         Gfx_FindOrLoadTexSlot(*p);
+     }
+ }
++
++#ifdef DW2_NATIVE
++#include "fpview_native.inc"
++#endif
+diff --git a/src/stag4000/fpview_math.inc b/src/stag4000/fpview_math.inc
+new file mode 100644
+index 0000000..3e88435
+--- /dev/null
++++ b/src/stag4000/fpview_math.inc
+@@ -0,0 +1,252 @@
++/* FP: the pure geometry of the first-person floor (no game state, no GTE): tuning, world ->
++ * camera, clipping against the near plane and the guard band, fog and the retail wall cull.
++ * Included by fpview_native.inc, and by a standalone preview renderer, so both run this
++ * same code. Needs s32 / u8 and <math.h>. */
++
++#ifndef STG40_FP_RADIUS
++#define STG40_FP_RADIUS 8
++#endif
++
++#define FP_TILE 0xA00           /* tile size in world units (x; z too in this view) */
++#define FP_HALF 0x500           /* half a tile */
++#define FP_EYE 0x2A0            /* eye height above the floor (walls are 0x500) */
++#define FP_PITCH 0x0C0          /* look down a little: reference point drop per 0x1000 ahead */
++#define FP_H 384                /* projection (GTE units, before the game's halving): ~80 deg */
++#define FP_NEAR 0x100           /* near plane, camera z */
++#define FP_GUARD 1.45f          /* clip guard band: x / y beyond the screen edge by this factor */
++#define FP_FOG_START (FP_TILE * 2.5f)
++#define FP_FOG_END (FP_TILE * (STG40_FP_RADIUS - 0.5f))
++#define FP_FLOOR_BIAS 96        /* OT entries a floor sorts behind its centre (entities on it) */
++#define FP_SHADOW_BIAS (FP_FLOOR_BIAS - 6)
++#define FP_TURN_STEP 0x100      /* camera yaw per frame (as the beetle turns) */
++#define FP_PACKET_BYTES 0x18000 /* the floor's own packet area per frame buffer */
++#define FP_MAXV 12              /* vertices of a clipped polygon (4 + 5 planes, rounded up) */
++
++typedef struct {
++    float w[3]; /* world (FP origin) */
++    float c[3]; /* camera space */
++    float u, v; /* texel */
++    float shade;
++} Stg40FpVert;
++
++typedef struct {
++    float m[3][3]; /* GsWSMATRIX rotation (1.0 = 0x1000) */
++    float t[3];
++    float gx;      /* guard band, GTE units */
++    float gy;
++} Stg40FpView;
++
++static void Stg40_FpToCamera(const Stg40FpView *c, Stg40FpVert *v) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        v->c[i] = c->t[i] + (c->m[i][0] * v->w[0] + c->m[i][1] * v->w[1] + c->m[i][2] * v->w[2]);
++    }
++}
++
++/* Distance of a camera-space point inside plane k (>= 0 inside). */
++static float Stg40_FpPlane(const Stg40FpView *c, const float *p, s32 k) {
++    switch (k) {
++    case 0:
++        return p[2] - FP_NEAR;
++    case 1:
++        return FP_H * p[0] + c->gx * p[2];
++    case 2:
++        return c->gx * p[2] - FP_H * p[0];
++    case 3:
++        return FP_H * p[1] + c->gy * p[2];
++    default:
++        return c->gy * p[2] - FP_H * p[1];
++    }
++}
++
++static void Stg40_FpLerp(Stg40FpVert *o, const Stg40FpVert *a, const Stg40FpVert *b, float t) {
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        o->w[i] = a->w[i] + (b->w[i] - a->w[i]) * t;
++        o->c[i] = a->c[i] + (b->c[i] - a->c[i]) * t;
++    }
++    o->u = a->u + (b->u - a->u) * t;
++    o->v = a->v + (b->v - a->v) * t;
++    o->shade = a->shade + (b->shade - a->shade) * t;
++}
++
++/* Sutherland-Hodgman against the near plane and the guard band. */
++static s32 Stg40_FpClip(const Stg40FpView *c, Stg40FpVert *v, s32 n) {
++    Stg40FpVert tmp[FP_MAXV];
++    float d[FP_MAXV];
++    s32 k;
++    s32 i;
++    s32 m;
++    s32 j;
++
++    for (k = 0; k < 5 && n >= 3; k++) {
++        s32 in = 0;
++
++        for (i = 0; i < n; i++) {
++            d[i] = Stg40_FpPlane(c, v[i].c, k);
++            in += d[i] >= 0.0f;
++        }
++        if (in == n) {
++            continue;
++        }
++        if (in == 0) {
++            return 0;
++        }
++        m = 0;
++        for (i = 0; i < n; i++) {
++            j = (i + 1) % n;
++            if (d[i] >= 0.0f && m < FP_MAXV) {
++                tmp[m++] = v[i];
++            }
++            if ((d[i] >= 0.0f) != (d[j] >= 0.0f) && m < FP_MAXV) {
++                Stg40_FpLerp(&tmp[m++], &v[i], &v[j], d[i] / (d[i] - d[j]));
++            }
++        }
++        for (i = 0; i < m; i++) {
++            v[i] = tmp[i];
++        }
++        n = m;
++    }
++    return n >= 3 ? n : 0;
++}
++
++static u8 Stg40_FpByte(float f) {
++    s32 i = (s32)lrintf(f);
++
++    return (u8)(i < 0 ? 0 : i > 255 ? 255 : i);
++}
++
++static float Stg40_FpFog(float z) {
++    float f = (FP_FOG_END - z) / (FP_FOG_END - FP_FOG_START);
++
++    return f < 0.0f ? 0.0f : f > 1.0f ? 1.0f : f;
++}
++
++/* A quad in packet corner order (P0 P1 / P2 P3, as POLY_FT4) with its four texels uv[k],
++ * into v[] as a clipped convex polygon (loop P0 P1 P3 P2), shade faded by distance. Returns
++ * the vertex count, 0 = nothing to draw. cull: keep only the side retail Stg40_DrawTileWalls
++ * draws: it culls when cross(b0 - a0, b1 - a0) > 0 on screen, a negative area of the loop
++ * a1 b1 b0 a0 (= P0 P1 P3 P2). */
++static s32 Stg40_FpPrepQuad(const Stg40FpView *c, const float p[4][3], const float uv[4][2], s32 shade, s32 cull,
++                            Stg40FpVert *v) {
++    static const u8 loop[4] = { 0, 1, 3, 2 };
++    float area;
++    s32 n;
++    s32 i;
++    s32 k;
++
++    for (i = 0; i < 4; i++) {
++        k = loop[i];
++        v[i].w[0] = p[k][0];
++        v[i].w[1] = p[k][1];
++        v[i].w[2] = p[k][2];
++        v[i].u = uv[k][0];
++        v[i].v = uv[k][1];
++        Stg40_FpToCamera(c, &v[i]);
++        v[i].shade = shade * Stg40_FpFog(v[i].c[2]);
++    }
++    n = Stg40_FpClip(c, v, 4);
++    if (n == 0 || !cull) {
++        return n;
++    }
++    area = 0.0f;
++    for (i = 0; i < n; i++) {
++        k = (i + 1) % n;
++        area += (v[i].c[0] / v[i].c[2]) * (v[k].c[1] / v[k].c[2]) -
++                (v[k].c[0] / v[k].c[2]) * (v[i].c[1] / v[i].c[2]);
++    }
++    return area < 0.0f ? 0 : n;
++}
++
++/* Floor template index of a map cell from its flags and its Rand_GetAt value, as
++ * Stg40_FillTileCache picks it. */
++static s32 Stg40_FpCellPrimFrom(u16 flags, u16 r) {
++    s32 k = flags & 0xF;
++    s32 a;
++
++    switch (k) {
++    case 0:
++        return 0;
++    case 1:
++    case 2:
++        a = k == 1 ? 0x18 : 0;
++        a += (flags >> 9) & 1;
++        if (flags & 0x80) {
++            a += 2;
++        }
++        if (flags & 0x800) {
++            a += 4;
++        }
++        if (r < 0x200) {
++            a += 8;
++        }
++        if (r < 0x400) {
++            a += 8;
++        }
++        if (r < 0x400) {
++            a |= 0x80;
++        }
++        return a;
++    default:
++        a = k + 0x2D;
++        if (r < 0x400) {
++            a |= 0x80;
++        }
++        return a;
++    }
++}
++
++/* Ring order around (pc, pr): ring 0 is the centre, ring r has 8r cells. */
++static void Stg40_FpRingCell(s32 pc, s32 pr, s32 ring, s32 i, s32 *col, s32 *row) {
++    if (ring == 0) {
++        *col = pc;
++        *row = pr;
++    } else if (i < 2 * ring) {
++        *col = pc - ring + i;
++        *row = pr - ring;
++    } else if (i < 4 * ring) {
++        *col = pc + ring;
++        *row = pr - ring + (i - 2 * ring);
++    } else if (i < 6 * ring) {
++        *col = pc + ring - (i - 4 * ring);
++        *row = pr + ring;
++    } else {
++        *col = pc - ring;
++        *row = pr + ring - (i - 6 * ring);
++    }
++}
++
++/* Subdivision of the quads: big polygons near the eye warp their textures when the PS1 maps
++ * them affine, so without precise (perspective-correct) geometry every floor is cut 2 x 2 and
++ * every wall 2 x 1 (pieces 0x500 square). One level for all cells: shared edges then split
++ * alike, so no T-junction opens a crack. With precise geometry (no wobble or smooth frames)
++ * the renderer corrects perspective itself and nothing is cut. */
++static s32 Stg40_FpSubdiv(s32 precise) {
++    return precise ? 1 : 2;
++}
++
++/* Piece (i, j) of nu x nv of a quad in packet corner order (P0 P1 / P2 P3), positions and
++ * texels interpolated bilinearly; i runs P0 -> P1, j runs P0 -> P2. */
++static void Stg40_FpSubQuad(const float p[4][3], const float uv[4][2], s32 i, s32 j, s32 nu, s32 nv, float sp[4][3],
++                            float suv[4][2]) {
++    s32 k;
++    s32 a;
++
++    for (k = 0; k < 4; k++) {
++        float s = (float)(i + (k & 1)) / nu;
++        float t = (float)(j + (k >> 1)) / nv;
++        float w0 = (1 - s) * (1 - t);
++        float w1 = s * (1 - t);
++        float w2 = (1 - s) * t;
++        float w3 = s * t;
++
++        for (a = 0; a < 3; a++) {
++            sp[k][a] = w0 * p[0][a] + w1 * p[1][a] + w2 * p[2][a] + w3 * p[3][a];
++        }
++        for (a = 0; a < 2; a++) {
++            suv[k][a] = w0 * uv[0][a] + w1 * uv[1][a] + w2 * uv[2][a] + w3 * uv[3][a];
++        }
++    }
++}
+diff --git a/src/stag4000/fpview_native.inc b/src/stag4000/fpview_native.inc
+new file mode 100644
+index 0000000..f170711
+--- /dev/null
++++ b/src/stag4000/fpview_native.inc
+@@ -0,0 +1,512 @@
++/* FP: first-person view in the domains (native build only). Included by floor.c inside
++ * #ifdef DW2_NATIVE, so the matching PS1 build never sees it (and no build globs a .inc).
++ * Overview in include/stag4000/fpview.h; the pure geometry is in fpview_math.inc. */
++
++#include <math.h>
++#include "stag4000/fpview.h"
++#include "fpview_math.inc"
++
++extern void Gfx_AnimateModelTex(Actor *a0);
++
++/* The floor's own packets, one area per frame buffer: a static array lies in the exe image,
++ * in the 16 MB window the 24-bit OT links reach (psyq/ps1mem.h), so the floor never takes
++ * room the game's models need in its packet buffer. */
++static u32 Stg40_FpPkt[2][FP_PACKET_BYTES / 4];
++static s32 Stg40_FpPktUsed;  /* bytes used in the area of Stg40_FpPktBuf this frame */
++static s32 Stg40_FpPktBuf = -1;
++static s32 Stg40_FpPktFrame;
++
++/* ---- state ------------------------------------------------------------------------------- */
++
++static s32 Stg40_FpSynced;  /* facing / yaw taken from the beetle */
++static void *Stg40_FpEnt;   /* the entity they were taken from */
++static s32 Stg40_FpFacing;  /* octant the view faces, 0..7 (retail octants: 0 down, 2 left ...) */
++static s32 Stg40_FpYaw;     /* camera yaw, 0..0xFFF, chases Stg40_FpFacing << 9 */
++
++void Stg40_FpReset(void) {
++    Stg40_FpSynced = 0;
++    Stg40_FpEnt = NULL;
++}
++
++s32 Stg40_FpActive(void) {
++    if (!Host_FpView()) {
++        Stg40_FpSynced = 0;
++        return 0;
++    }
++    if (Stg40_RootState == NULL || Stg40_RootState->playerEnt == NULL || Dung_StatePtr == NULL ||
++        Dung_StatePtr->floorHdr == NULL || Stg40_FloorWork == NULL) {
++        return 0;
++    }
++    return 1;
++}
++
++static void Stg40_FpSync(Stg40Ent48 *e) {
++    if (Stg40_FpSynced && Stg40_FpEnt == e) {
++        return;
++    }
++    Stg40_FpFacing = ((u16)e->targetHeading >> 9) & 7;
++    Stg40_FpYaw = Stg40_FpFacing << 9;
++    Stg40_FpEnt = e;
++    Stg40_FpSynced = 1;
++}
++
++/* The origin of the FP world: the player's (moving) map position. */
++static s32 Stg40_FpOriginX(void) {
++    return Stg40_RootState->playerEnt->loc.posX;
++}
++
++static s32 Stg40_FpOriginY(void) {
++    return Stg40_RootState->playerEnt->loc.posY;
++}
++
++s32 Stg40_FpWorldX(s32 posX) {
++    if (!Stg40_FpActive()) {
++        return (s16)((posX - Stg40_RootState->viewX) * 40);
++    }
++    return (s16)((posX - Stg40_FpOriginX()) * 40);
++}
++
++s32 Stg40_FpWorldZ(s32 posY) {
++    if (!Stg40_FpActive()) {
++        return (s16)-(((posY - Stg40_RootState->viewY) << 11) / 64);
++    }
++    return (s16)-((posY - Stg40_FpOriginY()) * 40);
++}
++
++s32 Stg40_FpOutOfRange(s32 posX, s32 posY) {
++    s32 dx;
++    s32 dy;
++
++    if (!Stg40_FpActive()) {
++        return 0;
++    }
++    dx = posX - Stg40_FpOriginX();
++    dy = posY - Stg40_FpOriginY();
++    return dx < -12 * 64 || dx > 12 * 64 || dy < -12 * 64 || dy > 12 * 64;
++}
++
++s32 Stg40_FpHidesEnt(void *ent) {
++    return Stg40_FpActive() && ent == (void *)Stg40_RootState->playerEnt;
++}
++
++s32 Stg40_FpHidesActor(void *actor) {
++    return Stg40_FpActive() && actor == (void *)Stg40_RootState->playerEnt->actor;
++}
++
++/* ---- controls ---------------------------------------------------------------------------- */
++
++s32 Stg40_FpPadOctant(void *ent) {
++    Stg40Ent48 *e = (Stg40Ent48 *)ent;
++    s32 turn = 0;
++    s32 rel = 0;
++
++    Stg40_FpSync(e);
++    if (Pad_State[0].up == 0) {
++        /* Left / Right turn a quarter, Down turns around: on the press, not while held.
++         * Retail octants run 0 down, 2 left, 4 up, 6 right (clockwise on the map): facing up
++         * (4), the left hand points left (2), so left of facing is -2 */
++        if (Pad_State[0].left > 0) {
++            turn = -2;
++        } else if (Pad_State[0].right > 0) {
++            turn = 2;
++        } else if (Pad_State[0].down > 0) {
++            turn = 4;
++        }
++        Stg40_FpFacing = (Stg40_FpFacing + turn) & 7;
++        /* the beetle turns to the view (also back after a diagonal step) */
++        if ((u16)e->targetHeading != (u16)(Stg40_FpFacing << 9)) {
++            e->targetHeading = Stg40_FpFacing << 9;
++            e->octant = Stg40_FpFacing;
++        }
++        return -1;
++    }
++    if (Pad_State[0].left != 0) {
++        rel = -1;
++    } else if (Pad_State[0].right != 0) {
++        rel = 1;
++    }
++    return (Stg40_FpFacing + rel) & 7;
++}
++
++/* ---- camera ------------------------------------------------------------------------------ */
++
++void Stg40_FpSetCamera(void *cameraWork) {
++    Stg40CameraWork *w = (Stg40CameraWork *)cameraWork;
++    Stg40Ent48 *e = Stg40_RootState->playerEnt;
++    Stg40RView v;
++    s32 target;
++    s32 d;
++    double a;
++    s32 eye;
++    s32 i;
++
++    Stg40_FpSync(e);
++    target = Stg40_FpFacing << 9;
++    d = ((target - Stg40_FpYaw + 0x800) & 0xFFF) - 0x800; /* shortest way, -0x800..0x7FF */
++    if (d > FP_TURN_STEP) {
++        d = FP_TURN_STEP;
++    } else if (d < -FP_TURN_STEP) {
++        d = -FP_TURN_STEP;
++    }
++    Stg40_FpYaw = (Stg40_FpYaw + d) & 0xFFF;
++
++    /* the super coordinate: identity at the origin (the player) */
++    for (i = 0; i < 9; i++) {
++        w->coord.coord.m[i / 3][i % 3] = (i % 4 == 0) ? 0x1000 : 0;
++    }
++    w->coord.coord.t[0] = 0;
++    w->coord.coord.t[1] = 0;
++    w->coord.coord.t[2] = 0;
++    w->coord.flg = 0;
++
++    /* heading h faces map direction (-sin, cos); world z is minus map y */
++    a = Stg40_FpYaw * (2.0 * 3.14159265358979323846 / 4096.0);
++    eye = FP_EYE + e->loc.height;
++    v.vpvr[0] = 0;
++    v.vpvr[1] = -eye;
++    v.vpvr[2] = 0;
++    v.vpvr[3] = (s32)lround(-sin(a) * 0x1000);
++    v.vpvr[4] = -eye + FP_PITCH;
++    v.vpvr[5] = (s32)lround(-cos(a) * 0x1000);
++    v.rz = 0;
++    v.super = &w->coord;
++    GsSetProjection(FP_H);
++    GsSetRefView2((void *)&v);
++}
++
++/* ---- floor ------------------------------------------------------------------------------- */
++
++/* POLY_GT3 (gouraud textured triangle), 0x28 bytes, 9 words after the tag. */
++typedef struct {
++    Stg40Tag tag;
++    u8 r0, g0, b0, code;
++    s16 x0, y0;
++    u8 u0, v0;
++    u16 clut;
++    u8 r1, g1, b1, p1;
++    s16 x1, y1;
++    u8 u1, v1;
++    u16 tpage;
++    u8 r2, g2, b2, p2;
++    s16 x2, y2;
++    u8 u2, v2;
++    u16 pad2;
++} Stg40FpGT3;
++
++typedef struct {
++    Stg40FpView view;
++    s32 shiftX; /* the game halves 640 x 480 GTE coordinates for its 320 x 240 screen */
++    s32 shiftY;
++    s32 shiftZ; /* OT index = otz >> shiftZ */
++    s32 maxOtz;
++    u8 *pkt;    /* packet cursor */
++    u8 *end;    /* end of this frame's area */
++    s32 full;
++} Stg40FpCtx;
++
++static s16 Stg40_FpS16(float f) {
++    return (s16)(f < -32767.0f ? -32767 : f > 32767.0f ? 32767 : lrintf(f));
++}
++
++/* One quad in packet corner order (P0 P1 / P2 P3, as POLY_FT4), textured from tpl, flat shade
++ * `shade` faded by distance; cull: draw only the side the retail wall test draws. otBias moves
++ * it back in the OT (entries). The clipped polygon goes through the GTE vertex by vertex (all
++ * in front of the near plane now, so the PGXP hook records their precise positions too) and
++ * out as a fan of POLY_GT3. */
++static void Stg40_FpQuad(Stg40FpCtx *c, const float p[4][3], const float uv[4][2], const Stg40FT4 *tpl, s32 shade,
++                         s32 cull, s32 otBias) {
++    Stg40FpVert v[FP_MAXV];
++    s32 sx[FP_MAXV];
++    s32 sy[FP_MAXV];
++    u32 *ot;
++    s32 otz;
++    s32 n;
++    s32 i;
++
++    if (c->full) {
++        return;
++    }
++    n = Stg40_FpPrepQuad(&c->view, p, uv, shade, cull, v);
++    if (n == 0) {
++        return;
++    }
++    otz = 0;
++    for (i = 0; i < n; i++) {
++        SVECTOR sv;
++        int sxy = 0;
++        int dummy = 0;
++        int flag = 0;
++
++        sv.vx = Stg40_FpS16(v[i].w[0]);
++        sv.vy = Stg40_FpS16(v[i].w[1]);
++        sv.vz = Stg40_FpS16(v[i].w[2]);
++        sv.pad = 0;
++        otz += RotTransPers(&sv, &sxy, &dummy, &flag);
++        sx[i] = (s16)(sxy & 0xFFFF) >> c->shiftX;
++        sy[i] = (s16)((u32)sxy >> 16) >> c->shiftY;
++    }
++    otz = (otz / n >> c->shiftZ) + otBias;
++    if (otz < 1) {
++        otz = 1;
++    } else if (otz > c->maxOtz) {
++        otz = c->maxOtz;
++    }
++    ot = &Sys_State.otLayers.u[3][otz];
++    for (i = 1; i + 1 < n; i++) {
++        Stg40FpGT3 *g = (Stg40FpGT3 *)c->pkt;
++        s32 k[3];
++        s32 j;
++
++        if (c->pkt + sizeof(Stg40FpGT3) > c->end) {
++            c->full = 1;
++            return;
++        }
++        k[0] = 0;
++        k[1] = i;
++        k[2] = i + 1;
++        g->tag.word = 0;
++        g->tag.b.len = 9;
++        g->code = 0x34 | (tpl->code & 2);
++        g->clut = tpl->clut;
++        g->tpage = tpl->tpage;
++        g->p1 = 0;
++        g->p2 = 0;
++        g->pad2 = 0;
++        for (j = 0; j < 3; j++) {
++            Stg40FpVert *q = &v[k[j]];
++            u8 s = Stg40_FpByte(q->shade);
++            s16 x = sx[k[j]];
++            s16 y = sy[k[j]];
++            u8 tu = Stg40_FpByte(q->u);
++            u8 tv = Stg40_FpByte(q->v);
++
++            if (j == 0) {
++                g->r0 = g->g0 = g->b0 = s;
++                g->x0 = x;
++                g->y0 = y;
++                g->u0 = tu;
++                g->v0 = tv;
++            } else if (j == 1) {
++                g->r1 = g->g1 = g->b1 = s;
++                g->x1 = x;
++                g->y1 = y;
++                g->u1 = tu;
++                g->v1 = tv;
++            } else {
++                g->r2 = g->g2 = g->b2 = s;
++                g->x2 = x;
++                g->y2 = y;
++                g->u2 = tu;
++                g->v2 = tv;
++            }
++        }
++        g->tag.word = (g->tag.word & 0xFF000000) | (*ot & 0xFFFFFF);
++        *ot = (*ot & 0xFF000000) | ((u32)(uintptr_t)c->pkt & 0xFFFFFF);
++        c->pkt += sizeof(Stg40FpGT3);
++    }
++}
++
++/* The template's four texels as floats. */
++static void Stg40_FpTplUv(const Stg40FT4 *tpl, float uv[4][2]) {
++    uv[0][0] = tpl->u0;
++    uv[0][1] = tpl->v0;
++    uv[1][0] = tpl->u1;
++    uv[1][1] = tpl->v1;
++    uv[2][0] = tpl->u2;
++    uv[2][1] = tpl->v2;
++    uv[3][0] = tpl->u3;
++    uv[3][1] = tpl->v3;
++}
++
++/* Stg40_FpQuad in nu x nv pieces. */
++static void Stg40_FpQuadN(Stg40FpCtx *c, const float p[4][3], const Stg40FT4 *tpl, s32 shade, s32 cull, s32 otBias,
++                          s32 nu, s32 nv) {
++    float uv[4][2];
++    float sp[4][3];
++    float suv[4][2];
++    s32 i;
++    s32 j;
++
++    Stg40_FpTplUv(tpl, uv);
++    for (j = 0; j < nv; j++) {
++        for (i = 0; i < nu; i++) {
++            Stg40_FpSubQuad(p, (const float(*)[2])uv, i, j, nu, nv, sp, suv);
++            Stg40_FpQuad(c, (const float(*)[3])sp, (const float(*)[2])suv, tpl, shade, cull, otBias);
++        }
++    }
++}
++
++/* Loads GsWSMATRIX into the GTE (PushMatrix; Stg40_FpEnd pops). 0 = no packet room. */
++static s32 Stg40_FpBegin(Stg40FpCtx *c) {
++    Mat1F668 mtx = GsWSMATRIX;
++    s32 margin;
++    s32 buf = Sys_State.bufIndex & 1;
++    s32 i;
++    s32 j;
++
++    if (buf != Stg40_FpPktBuf || Sys_State.frameCount != Stg40_FpPktFrame) {
++        Stg40_FpPktBuf = buf;
++        Stg40_FpPktFrame = Sys_State.frameCount;
++        Stg40_FpPktUsed = 0;
++    }
++
++    for (i = 0; i < 3; i++) {
++        for (j = 0; j < 3; j++) {
++            c->view.m[i][j] = mtx.m[i][j] / 4096.0f;
++        }
++        c->view.t[i] = (float)mtx.t[i];
++    }
++    c->shiftX = Sys_State.centerX.s != 0x140;
++    c->shiftY = Sys_State.centerY.s != 0xF0;
++    c->shiftZ = Sys_State.otLayerLen[3] - 2;
++    c->maxOtz = 0x3FFF >> c->shiftZ;
++    margin = Host_WideMargin(Sys_State.centerX.s * 2);
++    c->view.gx = (float)((Sys_State.centerX.s + margin) << c->shiftX) * FP_GUARD;
++    c->view.gy = (float)(Sys_State.centerY.s << c->shiftY) * FP_GUARD;
++    c->pkt = (u8 *)Stg40_FpPkt[buf] + Stg40_FpPktUsed;
++    c->end = (u8 *)Stg40_FpPkt[buf] + FP_PACKET_BYTES;
++    c->full = c->pkt + sizeof(Stg40FpGT3) > c->end;
++    PushMatrix();
++    SetRotMatrix((void *)&mtx);
++    SetTransMatrix((void *)&mtx);
++    return !c->full;
++}
++
++static void Stg40_FpEnd(Stg40FpCtx *c) {
++    PopMatrix();
++    Stg40_FpPktUsed = (s32)(c->pkt - (u8 *)Stg40_FpPkt[Stg40_FpPktBuf]);
++}
++
++static void Stg40_FpDrawCell(Stg40FpCtx *c, Stg40FloorWork *w, s32 mapCol, s32 mapRow, s32 ox, s32 oy,
++                             s32 step, s32 sub) {
++    Stg40FloorHeader *hdr = Dung_StatePtr->floorHdr;
++    Stg40Cell *cell = &((Stg40Cell *)Dung_StatePtr->cells)[mapRow * hdr->cols + mapCol];
++    u16 flags = cell->flags;
++    s32 prim = Stg40_FpCellPrimFrom(flags, Rand_GetAt(mapCol + (mapRow << 6)));
++    float cx = (float)((mapCol * 64 - ox) * 40);
++    float cz = (float)(-(mapRow * 64 - oy) * 40);
++    float xs[2];
++    float zs[2];
++    float p[4][3];
++    s32 i;
++
++    xs[0] = cx - FP_HALF; /* left, right */
++    xs[1] = cx + FP_HALF;
++    zs[0] = cz + FP_HALF; /* top (map row above), bottom */
++    zs[1] = cz - FP_HALF;
++    if (flags != 0) {
++        /* P0 top-left, P1 top-right, P2 bottom-left, P3 bottom-right, as Stg40_DrawTileTop */
++        for (i = 0; i < 4; i++) {
++            p[i][0] = xs[i & 1];
++            p[i][1] = 0.0f;
++            p[i][2] = zs[i >> 1];
++        }
++        Stg40_FpQuadN(c, (const float(*)[3])p, &w->prims[Stg40_FloorPrimIdx[prim & 0x7F]], 0x7F, 0,
++                      FP_FLOOR_BIAS, sub, sub);
++    }
++    if (flags & 0xF00) {
++        const u8 *base = &Stg40_WallPrimIdx[(u16)hdr->wallStyle * 5];
++
++        for (i = 0; i < 4; i++) {
++            Stg40WallSide *rec = &Stg40_WallSides[i];
++            s32 k;
++
++            if ((flags & rec->wallMask) == 0) {
++                continue;
++            }
++            k = (cell->wallBits >> rec->wallBitShift) & 3;
++            if (k == 0 && (prim & 0x80)) {
++                k = 4;
++            }
++            /* as Stg40_DrawTileWalls: P0 a high, P1 b high, P2 a low, P3 b low ("high" is the
++             * second level, y = step) */
++            p[0][0] = xs[rec->ax];
++            p[0][1] = (float)step;
++            p[0][2] = zs[rec->ay];
++            p[1][0] = xs[rec->bx];
++            p[1][1] = (float)step;
++            p[1][2] = zs[rec->by];
++            p[2][0] = xs[rec->ax];
++            p[2][1] = 0.0f;
++            p[2][2] = zs[rec->ay];
++            p[3][0] = xs[rec->bx];
++            p[3][1] = 0.0f;
++            p[3][2] = zs[rec->by];
++            Stg40_FpQuadN(c, (const float(*)[3])p, &w->prims[base[k]], rec->shade, 1, 0, sub,
++                          1); /* walls are half a tile high */
++        }
++    }
++}
++
++void Stg40_FpDrawFloor(void *floorWork) {
++    Stg40FloorWork *w = (Stg40FloorWork *)floorWork;
++    Stg40FloorHeader *hdr = Dung_StatePtr->floorHdr;
++    Stg40FpCtx c;
++    s32 ox = Stg40_FpOriginX();
++    s32 oy = Stg40_FpOriginY();
++    s32 pc = (ox + 32) >> 6;
++    s32 pr = (oy + 32) >> 6;
++    s32 step = hdr->field_4 != 0 ? -0x500 : 0x500;
++    s32 sub = Stg40_FpSubdiv(Host_PreciseGeometry());
++    s32 ring;
++    s32 i;
++
++    if (!Stg40_FpBegin(&c)) {
++        PopMatrix();
++        return;
++    }
++    /* nearest cells first, so a full packet buffer drops the far ones */
++    for (ring = 0; ring <= STG40_FP_RADIUS && !c.full; ring++) {
++        s32 n = ring == 0 ? 1 : ring * 8;
++
++        for (i = 0; i < n && !c.full; i++) {
++            s32 col;
++            s32 row;
++            Stg40FpVert t;
++
++            Stg40_FpRingCell(pc, pr, ring, i, &col, &row);
++            if (col < 0 || row < 0 || col >= hdr->cols || row >= hdr->rows) {
++                continue;
++            }
++            /* cells wholly behind the eye or past the fog */
++            t.w[0] = (float)((col * 64 - ox) * 40);
++            t.w[1] = 0.0f;
++            t.w[2] = (float)(-(row * 64 - oy) * 40);
++            Stg40_FpToCamera(&c.view, &t);
++            if (t.c[2] < -FP_TILE * 0.75f || t.c[2] > FP_FOG_END + FP_TILE) {
++                continue;
++            }
++            Stg40_FpDrawCell(&c, w, col, row, ox, oy, step, sub);
++        }
++    }
++    Stg40_FpEnd(&c);
++}
++
++void Stg40_FpDrawShadow(void *locp) {
++    Stg40Loc *loc = (Stg40Loc *)locp;
++    Stg40FpCtx c;
++    s32 dx = loc->posX - Stg40_FpOriginX();
++    s32 dy = loc->posY - Stg40_FpOriginY();
++    float x = (float)(dx * 40);
++    float z = (float)(-dy * 40);
++    float p[4][3];
++    s32 i;
++
++    if (dx > STG40_FP_RADIUS * 64 || -dx > STG40_FP_RADIUS * 64 || dy > STG40_FP_RADIUS * 64 ||
++        -dy > STG40_FP_RADIUS * 64) {
++        return;
++    }
++    if (!Stg40_FpBegin(&c)) {
++        PopMatrix();
++        return;
++    }
++    /* Stg40_ShadowCorners: x +-0x500, z +-0x400 on the retail 0x800 rows; square here */
++    for (i = 0; i < 4; i++) {
++        p[i][0] = x + Stg40_ShadowCorners.v[i * 2];
++        p[i][1] = -8.0f;
++        p[i][2] = z + Stg40_ShadowCorners.v[i * 2 + 1] * 1.25f;
++    }
++    Stg40_FpQuadN(&c, (const float(*)[3])p, &Stg40_FloorWork->prims[Stg40_ShadowPrimIdx], 0x7F, 0,
++                  FP_SHADOW_BIAS, 1, 1);
++    Stg40_FpEnd(&c);
++}
+diff --git a/src/stag4000/linkedmodel.c b/src/stag4000/linkedmodel.c
+index 655f0dc..15baf7c 100644
+--- a/src/stag4000/linkedmodel.c
++++ b/src/stag4000/linkedmodel.c
+@@ -1,5 +1,9 @@
+ #include "common.h"
+ #include "stag4000/stag4000.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++extern void Gfx_AnimateModelTex(Actor *a0);
++#endif
+ 
+ /* Task callbacks this unit defines further down (the descriptor comes first). */
+ void Stg40_LinkedModelInit(Actor *a0, Stg40LinkedModelArg *a1);
+@@ -91,6 +95,12 @@ void Stg40_LinkedModelDraw(Actor *a0) {
+         Anim_StepModelAnim(a0);
+         Actor_UpdateTransform(a0);
+         Gfx_CalcModelBoneMatrices(a0);
++#ifdef DW2_NATIVE
++        if (Stg40_FpHidesActor(p)) {
++            Gfx_AnimateModelTex(a0); /* FP: on the hidden beetle; anim runs, nothing drawn */
++            return;
++        }
++#endif
+         Gfx_DrawTexModel(a0, 0);
+     }
+ }
+diff --git a/src/stag4000/obj.c b/src/stag4000/obj.c
+index 4453340..3da25fd 100644
+--- a/src/stag4000/obj.c
++++ b/src/stag4000/obj.c
+@@ -4,6 +4,10 @@
+ #include "stag4000/linkedmodel.h"
+ #include "stag4000/obj.h"
+ #include "stag4000/player.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++extern void Gfx_AnimateModelTex(Actor *a0);
++#endif
+ 
+ u8 Stg40_FlashPattern[] = { 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0xFF, 0 };
+ Stg40Col Stg40_FlashColors[] = {
+@@ -432,6 +436,9 @@ static void Stg40_SideDrawEnt(Actor *a0) {
+     if (!(e->flags & 0x4000) || !vis || a0->u38.ptr38 == NULL) {
+         return;
+     }
++    if (Stg40_FpHidesEnt(e) || Stg40_FpOutOfRange(e->loc.posX, e->loc.posY)) {
++        return; /* FP: the camera is in the beetle / too far for s16 positions */
++    }
+     if (!(e->flags & 0x400)) {
+         s = Stg40_SideModelFor(a0, w->modelFile);
+         if (s == NULL || Stg40_SidePacketRoom() < s->needBytes + 0x100) {
+@@ -466,8 +473,8 @@ static void Stg40_SideDrawEnt(Actor *a0) {
+     }
+     memcpy(s->xform, a0->u38.ptr38, sizeof(s->xform));
+     x = (Stg40Xform *)s->xform;
+-    x->posX = (s16)((e->loc.posX - Stg40_RootState->viewX) * 40);
+-    x->posZ = (s16)-(((e->loc.posY - Stg40_RootState->viewY) << 11) / 64);
++    x->posX = (s16)Stg40_FpWorldX(e->loc.posX); /* FP: player-centred, square tiles */
++    x->posZ = (s16)Stg40_FpWorldZ(e->loc.posY);
+     x->posY = -(s16)e->loc.height;
+     x->rotY = e->heading;
+     x->scaleX = e->scaleX;
+@@ -549,14 +556,39 @@ void Stg40_ObjDraw(Actor *a0) {
+             w->pendingAnim = -1;
+         }
+         x = (Stg40Xform *)a0->u38.ptr38;
++#ifdef DW2_NATIVE
++        /* FP: player-centred, square tiles (the retail values otherwise) */
++        x->posX = (s16)Stg40_FpWorldX(e->loc.posX);
++        x->posZ = (s16)Stg40_FpWorldZ(e->loc.posY);
++#else
+         x->posX = (s16)((e->loc.posX - Stg40_RootState->viewX) * 40);
+         x->posZ = (s16)-(((e->loc.posY - Stg40_RootState->viewY) << 11) / 64);
++#endif
+         x->posY = -(s16)e->loc.height;
++#ifdef DW2_NATIVE
++        if (Stg40_FpOutOfRange(e->loc.posX, e->loc.posY)) {
++            x->posX = 0;
++            x->posZ = 0;
++            x->posY = 0x7000; /* FP: far below the floor, where the GTE flags cull it */
++        }
++#endif
+         x->rotY = e->heading;
+         x->scaleX = e->scaleX;
+         x->scaleY = e->scaleY;
+         x->scaleZ = e->scaleZ;
+         if ((e->flags & 0x4000) && vis) {
++#ifdef DW2_NATIVE
++            if (Stg40_FpHidesEnt(e)) {
++                /* FP: the camera is inside the beetle. Its anim still runs (the turn logic
++                 * waits on it), and its texture anim keeps its RNG calls, only nothing is drawn */
++                if (!(e->flags & 0x400)) {
++                    Anim_StepModelAnim(a0);
++                    Actor_UpdateTransform(a0);
++                    Gfx_CalcModelBoneMatrices(a0);
++                    Gfx_AnimateModelTex(a0);
++                }
++            } else {
++#endif
+             if (!(e->flags & 0x80)) {
+                 Stg40_DrawEntityShadow(&e->loc);
+             }
+@@ -566,13 +598,19 @@ void Stg40_ObjDraw(Actor *a0) {
+                 Gfx_CalcModelBoneMatrices(a0);
+                 Gfx_DrawTexModel(a0, 0);
+             }
++#ifdef DW2_NATIVE
++            }
++#endif
+         }
+         w->drawn = 1;
+     }
+ #ifdef DW2_NATIVE
+-    /* PG.8a 16:9: the extra floor columns; drawn after the draw pass on a side model */
+-    else if (Host_WideMargin(Sys_State.centerX.s * 2) != 0 && dx < 0x140 + STG40_WIDE_COLS * 0x40 &&
+-             dy < 0x140 && Stg40_SideCount < STG40_SIDE_MAX) {
++    /* PG.8a 16:9: the extra floor columns; drawn after the draw pass on a side model.
++     * FP: everything out to STG40_FP_RADIUS the same way */
++    else if (((Host_WideMargin(Sys_State.centerX.s * 2) != 0 && dx < 0x140 + STG40_WIDE_COLS * 0x40 &&
++               dy < 0x140) ||
++              (Stg40_FpActive() && dx < STG40_FP_RADIUS * 0x40 && dy < STG40_FP_RADIUS * 0x40)) &&
++             Stg40_SideCount < STG40_SIDE_MAX) {
+         Stg40_SideQueue[Stg40_SideCount++] = a0;
+         Gfx_LateDraw = Stg40_DrawSideEntities;
+     }
+diff --git a/src/stag4000/player.c b/src/stag4000/player.c
+index e62f07d..7405360 100644
+--- a/src/stag4000/player.c
++++ b/src/stag4000/player.c
+@@ -7,6 +7,9 @@
+ #include "stag4000/msgwin.h"
+ #include "stag4000/obj.h"
+ #include "stag4000/player.h"
++#ifdef DW2_NATIVE
++#include "stag4000/fpview.h"
++#endif
+ 
+ Stg40XY16 Stg40_DirOffsets[] = {
+     { 1, 1 }, { 0, 1 }, { -1, 1 }, { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 }, { 1, 0 }, { 1, 1 }, { 0, 1 },
+@@ -188,6 +191,12 @@ s32 Stg40_PlayerTryMove(Stg40Ent48 *e) {
+     if (loc->moving != 0) {
+         return 0;
+     }
++#ifdef DW2_NATIVE
++    if (Stg40_FpActive()) {
++        /* FP: the pad relative to the view (turns in place happen in there) */
++        k = Stg40_FpPadOctant(e);
++    } else {
++#endif
+     bits = (Pad_State[0].right != 0) << 2;
+     if (Pad_State[0].left != 0) {
+         bits |= 8;
+@@ -198,6 +207,9 @@ s32 Stg40_PlayerTryMove(Stg40Ent48 *e) {
+     }
+     idx = dir | (Pad_State[0].down != 0);
+     k = Stg40_PadDirTable[idx];
++#ifdef DW2_NATIVE
++    }
++#endif
+     oct = (s16)k;
+     if (k < 0) {
+         return 0;
+-- 
+2.43.0
+

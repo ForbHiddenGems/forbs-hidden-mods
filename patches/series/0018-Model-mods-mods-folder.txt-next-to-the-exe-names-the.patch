@@ -1,0 +1,94 @@
+From 704c757741667ad76446130b7df14563dcb74f12 Mon Sep 17 00:00:00 2001
+From: FP mod <fpmod@localhost>
+Date: Wed, 28 Oct 2026 12:20:29 +0000
+Subject: [PATCH 18/26] Model mods: mods-folder.txt next to the exe names the
+ mods folder to read first
+
+Forbs Hidden Mods' forbs.py writes it into every build so they all read the one
+mods folder in the forbs-hidden-mods folder.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/mods.c | 48 ++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/host/mods.c b/host/mods.c
+index 78b619f..bdb6b47 100644
+--- a/host/mods.c
++++ b/host/mods.c
+@@ -1,7 +1,8 @@
+ /* Model mods (native only): replacement game files in a mods/ folder.
+  *
+  * A file named <hex file id>.bin (e.g. 0A12.bin, as the dw2model Blender add-on exports it) in
+- * mods/ next to the exe, or in mods/ in the user data folder, is served to the game instead of
++ * the folder named by mods-folder.txt next to the exe, in mods/ next to the exe, or in mods/ in
++ * the user data folder (the first one found wins), is served to the game instead of
+  * that file from dw2.pak. The pack itself is never changed and is still checked in full; with
+  * no mods folder (or an empty one) nothing changes. The game reads every model, animation and
+  * texture file through Cd_ReadFileAsync (src/main/cdread.c), which asks Host_ModFile first. */
+@@ -52,7 +53,7 @@ static SDL_EnumerationResult SDLCALL scan_one(void *dir, const char *dirname, co
+ 
+     (void)dir;
+     if (id < 0 || mod_data[id] != NULL) {
+-        return SDL_ENUM_CONTINUE; /* not a mod file, or already taken from the folder next to the exe */
++        return SDL_ENUM_CONTINUE; /* not a mod file, or already taken from a folder read earlier */
+     }
+     SDL_asprintf(&path, "%s%s", dirname, name);
+     data = path ? SDL_LoadFile(path, &size) : NULL;
+@@ -83,9 +84,52 @@ static void scan(const char *base) {
+     SDL_free(dir);
+ }
+ 
++/* mods-folder.txt next to the exe: one line naming the mods folder to read first (absolute, or
++ * relative to the exe). Forbs Hidden Mods' forbs.py writes it so every build reads the one mods
++ * folder in the forbs-hidden-mods folder. */
++static void scan_listed(const char *base) {
++    char *txt = NULL;
++    char *line;
++    char *dir = NULL;
++    size_t size = 0;
++    size_t n;
++    int absolute;
++
++    if (base == NULL) {
++        return;
++    }
++    SDL_asprintf(&txt, "%smods-folder.txt", base);
++    line = txt ? (char *)SDL_LoadFile(txt, &size) : NULL;
++    SDL_free(txt);
++    if (line == NULL) {
++        return;
++    }
++    n = strcspn(line, "\r\n");
++    line[n] = '\0';
++    while (n > 0 && (line[n - 1] == '/' || line[n - 1] == '\\' || line[n - 1] == ' ')) {
++        line[--n] = '\0';
++    }
++    if (n > 0) {
++        absolute = line[0] == '/' || line[0] == '\\' || (n > 1 && line[1] == ':');
++        SDL_asprintf(&dir, "%s%s/", absolute ? "" : base, line);
++        if (dir != NULL) {
++            SDL_PathInfo info;
++            if (SDL_GetPathInfo(dir, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
++                printf("[mods] reading %s (from mods-folder.txt)\n", dir);
++                SDL_EnumerateDirectory(dir, scan_one, NULL);
++            } else {
++                printf("[mods] mods-folder.txt names %s, which is not a folder\n", dir);
++            }
++        }
++        SDL_free(dir);
++    }
++    SDL_free(line);
++}
++
+ void Host_ModsInit(void) {
+     char *pref = SDL_GetPrefPath("", "DW2-Online");
+ 
++    scan_listed(SDL_GetBasePath());
+     scan(SDL_GetBasePath());
+     scan(pref);
+     SDL_free(pref);
+-- 
+2.43.0
+
