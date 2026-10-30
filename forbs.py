@@ -4,7 +4,7 @@
     python forbs.py setup <your DW2-PC folder>   once: copy your DW2-PC here, apply the mods
     python forbs.py build [--dev | --both]       build the game (release by default)
     python forbs.py play  [--dev]                start the game
-    python forbs.py extract                      game data for the Blender add-on -> game-data
+    python forbs.py extract                      every file from your dw2.pak -> game-data
     python forbs.py addon                        the Blender add-on -> dist/dw2_digimon_addon.zip
     python forbs.py update                       after new patches: apply + build both + add-on
     python forbs.py apply                        put the patches in patches/series on DW2-PC again
@@ -316,7 +316,7 @@ def cmd_extract(args):
         die("no dw2.pak found. Build and start the game once, or give its path:\n"
             "  python forbs.py extract <path to dw2.pak>")
     r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "dw2_extract_models.py"),
-                        "--out", GAME_DATA, pak])
+                        "--all", "--out", GAME_DATA, pak])
     if r.returncode != 0:
         die("extracting failed")
 
