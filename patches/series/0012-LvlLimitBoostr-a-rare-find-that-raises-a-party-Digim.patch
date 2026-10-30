@@ -1,7 +1,7 @@
 From 899c620d1377824cc53e19b87a38b4c40b55ec3c Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 22:11:54 +0000
-Subject: [PATCH 12/29] LvlLimitBoostr: a rare find that raises a party
+Subject: [PATCH 12/30] LvlLimitBoostr: a rare find that raises a party
  Digimon's level limit by 1
 
 With mystery encounters on: 1% of won ? battles offer it right after the

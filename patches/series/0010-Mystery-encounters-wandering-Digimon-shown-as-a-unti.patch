@@ -1,7 +1,7 @@
 From 665712595f477268b821f6bd92ddfc9430af5f9b Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 21:06:09 +0000
-Subject: [PATCH 10/29] Mystery encounters: wandering Digimon shown as a ?
+Subject: [PATCH 10/30] Mystery encounters: wandering Digimon shown as a ?
  until the battle
 
 F1 > Display > Mystery encounters: 1 per floor, 30% of encounters, all

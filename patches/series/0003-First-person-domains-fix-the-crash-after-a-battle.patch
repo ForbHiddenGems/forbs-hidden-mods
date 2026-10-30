@@ -1,7 +1,7 @@
 From 0bcedc3ff712c3eea10ff55e9a83a45480854c2e Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Sun, 25 Oct 2026 23:00:05 +0000
-Subject: [PATCH 03/29] First-person domains: fix the crash after a battle
+Subject: [PATCH 03/30] First-person domains: fix the crash after a battle
 
 The hidden beetle's texture animation read model->texSlot, which only
 Gfx_DrawTexModel sets; a model attached while first person is on (the

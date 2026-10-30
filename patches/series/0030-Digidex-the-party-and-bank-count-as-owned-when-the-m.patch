@@ -1,0 +1,92 @@
+From 6a873f24efc237f421315351f79020c6f4f7615d Mon Sep 17 00:00:00 2001
+From: Forb Hidden Gems <348521123+ForbHiddenGems@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 11:59:16 +0000
+Subject: [PATCH 30/30] Digidex: the party and bank count as owned when the
+ menu opens
+
+Everything in the roster is owned as soon as the top menu (or the Digidex)
+opens, so the Digimon a save already has show at once. Battles still mark
+enemies seen and the party owned, and a battle digivolution its new form.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ include/main/digidex.h |  5 ++++-
+ src/main/digidex.c     | 15 +++++++++++++--
+ src/main/topmenu.c     |  1 +
+ 3 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/include/main/digidex.h b/include/main/digidex.h
+index 5d72ffa..445e60b 100644
+--- a/include/main/digidex.h
++++ b/include/main/digidex.h
+@@ -11,10 +11,13 @@
+ 
+ #include "common.h"
+ 
+-/* 0 unmet, 1 seen (fought against), 2 owned (fought with it, or digivolved into it in battle) */
++/* 0 unmet, 1 seen (fought against), 2 owned (in the party or bank, or digivolved into in battle) */
+ s32 Dex_Level(s32 digiId);
+ void Dex_MarkSeen(s32 digiId);
+ void Dex_MarkOwned(s32 digiId);
++/* every Digimon in the roster (party and bank) counts as owned: the top menu and the Digidex
++ * call this when they open */
++void Dex_ScanRoster(void);
+ /* a box of the top menu's sprite, any size, at screen x, y (0..319, 0..239) */
+ void Dex_DrawBox(s32 x, s32 y, s32 w, s32 h);
+ /* the same in ordering table layer `layer` (0: the menus' own) */
+diff --git a/src/main/digidex.c b/src/main/digidex.c
+index e2687e9..4be2267 100644
+--- a/src/main/digidex.c
++++ b/src/main/digidex.c
+@@ -4,8 +4,8 @@
+  * base data table (0xC6C, id order) on the left; on the right the selected one's model, turning,
+  * and what it is: name, level and type, its technique, what it digivolves from and, by DP, into.
+  * Unmet Digimon are a black silhouette named "?????"; seen ones (fought against) show name and
+- * model; owned ones (fought with it in the party, or digivolved into it in battle) show their
+- * technique too. Every save starts empty. Up / down move,
++ * model; owned ones (in the party or bank whenever the menu opens, or digivolved into in
++ * battle) show their technique too. Up / down move,
+  * left / right a page, Triangle or Circle closes. Windows are the top menu's box sprite (0x457
+  * cells 1 and 2) drawn in slices to any size. */
+ #ifdef DW2_NATIVE
+@@ -54,6 +54,16 @@ void Dex_MarkOwned(s32 digiId) {
+     }
+ }
+ 
++void Dex_ScanRoster(void) {
++    s32 i;
++
++    for (i = 0; i < 0x24; i++) {
++        if (Save_GameState.elems[i].state != 0) {
++            Dex_MarkOwned(Save_GameState.elems[i].digiId);
++        }
++    }
++}
++
+ /* what the screen shows: the F2 "show all" box shows every Digimon as owned */
+ static s32 Dex_Shown(s32 digiId) {
+     return Host_DexShowAll() ? 2 : Dex_Level(digiId);
+@@ -511,6 +521,7 @@ void Menu_DigidexInit(Actor *a, s32 arg) {
+     }
+     GsSetAmbient(q[0], q[1], q[2]);
+     GsSetLightMode(0);
++    Dex_ScanRoster();
+ }
+ 
+ void Menu_DigidexDestroy(Actor *a) {
+diff --git a/src/main/topmenu.c b/src/main/topmenu.c
+index 7b48ce3..2df36c0 100644
+--- a/src/main/topmenu.c
++++ b/src/main/topmenu.c
+@@ -297,6 +297,7 @@ void Menu_TopMenuTask(Actor *a0) {
+ #ifdef DW2_NATIVE
+         w->gridSize[1] = DEX_MENU_ROW + 1;
+         Menu_DexText = -1;
++        Dex_ScanRoster(); /* the Digidex: everything in the party and bank is owned */
+ #endif
+         Menu_Ctx->flags = 0;
+         v = Sys_State.gameMode;
+-- 
+2.43.0
+
