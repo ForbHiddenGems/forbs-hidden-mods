@@ -87,10 +87,12 @@ belong in patches.
 - **LvlLimitBoostr:** a rare find that raises a party Digimon's level limit by 1. Has 1% chances from
   chests and from ? encounters, each with its own toggle.
 - **Battle digivolution:** each of your Digimon gets a DP row under its HP and MP, which fills by dealing
-  and taking damage. When it's full, a Rookie that has a Champion form gets a **Digivolve**
-  command. The Digi-Lab's digivolution plays on the battlefield and it fights as its Champion
-  form, with its own technique and +30% HP, MP, attack, defense and speed, for 3 turns before changing back. Your save
-  is never changed.
+  and taking damage. When it's full, it gets a **Digivolve** command and fights one level up: the
+  Digi-Lab's digivolution plays on the battlefield and it becomes the form its digivolution table
+  names at its DP, with that form's technique and +30% HP, MP, attack, defense and speed, for 3
+  turns before changing back. Your tamer rank unlocks each step: Rookie to Champion at any rank,
+  Champion to Ultimate from rank 5 (Pro), Ultimate to Mega from rank 8 (Commander). Your save is
+  never changed.
 - **Model mods:** the game reads replacement files from a `mods` folder next to `dw2.exe` (or in
   `%APPDATA%\DW2-Online\mods`, or the folder named in `mods-folder.txt` next to the exe), named by
   game file number (`005C.bin`). A label may follow the number after a space, `_` or `-`

@@ -1,7 +1,7 @@
 From aba41c7d653e7db85ae9b458fa4115861182fd0f Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 20:34:19 +0000
-Subject: [PATCH 08/26] Domain camera views: F4 cycles classic, high chase, low
+Subject: [PATCH 08/27] Domain camera views: F4 cycles classic, high chase, low
  chase, first person
 
 The camera moves smoothly between the views: height, distance, tilt, field of

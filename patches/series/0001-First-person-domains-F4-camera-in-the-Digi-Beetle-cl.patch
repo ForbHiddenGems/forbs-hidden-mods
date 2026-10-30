@@ -1,7 +1,7 @@
 From fbe348a37441ab9351f4202404856439b7d9c372 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Sun, 25 Oct 2026 21:58:37 +0000
-Subject: [PATCH 01/26] First-person domains (F4): camera in the Digi-Beetle,
+Subject: [PATCH 01/27] First-person domains (F4): camera in the Digi-Beetle,
  clipped fogged floor, relative controls
 
 Native-only (DW2_NATIVE); the PS1 matching build is unchanged. See doc/FPVIEW.md.

@@ -1,7 +1,7 @@
 From 4e4864a6db2e3dae803fb57f073ae799b650b288 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Thu, 29 Oct 2026 12:52:32 +0000
-Subject: [PATCH 25/26] Battle digivolution: "62/100%" under the DP gauge
+Subject: [PATCH 25/27] Battle digivolution: "62/100%" under the DP gauge
 
 The DP section shows how full the gauge is under it, as the MP section shows
 its numbers: the game's own MP digit parts one section lower, with the "/"

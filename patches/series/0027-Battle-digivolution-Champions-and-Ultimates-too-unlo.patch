@@ -1,0 +1,249 @@
+From 8dbc6ff0bf21425434cbad875b767c0e0ef71afd Mon Sep 17 00:00:00 2001
+From: Forb Hidden Gems <348521123+ForbHiddenGems@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 10:24:19 +0000
+Subject: [PATCH 27/27] Battle digivolution: Champions and Ultimates too,
+ unlocked by tamer rank
+
+A Rookie digivolves to its Champion at any tamer rank, a Champion to its
+Ultimate from rank 5 (Pro), an Ultimate to its Mega from rank 8
+(Commander). Megas don't. The step is the one the Digimon's digivolution
+table names at its DP, as before; below the rank needed the DP gauge
+stays empty.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
+---
+ host/settingsui.cpp           |  6 ++--
+ include/stag3000/evo_native.h |  7 ++--
+ src/stag3000/battle.c         |  6 ++--
+ src/stag3000/evo_native.inc   | 61 ++++++++++++++++++++++++-----------
+ 4 files changed, 53 insertions(+), 27 deletions(-)
+
+diff --git a/host/settingsui.cpp b/host/settingsui.cpp
+index 0b47d82..169c5d1 100644
+--- a/host/settingsui.cpp
++++ b/host/settingsui.cpp
+@@ -329,8 +329,10 @@ void mods_tab(void) {
+     if (ImGui::Checkbox("Digivolve in battle", &battleEvo)) {
+         Host_RequestSetting(SET_FPBATTLEEVO, battleEvo);
+     }
+-    ImGui::TextDisabled("Your Digimon fill an energy bar by dealing and taking damage. Full, a Rookie");
+-    ImGui::TextDisabled("can choose Digivolve: it becomes its Champion form for 3 turns.");
++    ImGui::TextDisabled("Your Digimon fill an energy bar by dealing and taking damage. Full, one can");
++    ImGui::TextDisabled("choose Digivolve and fight one level up for 3 turns. Tamer rank unlocks each step:");
++    ImGui::TextDisabled("Rookie to Champion at any rank, Champion to Ultimate at Pro (5),");
++    ImGui::TextDisabled("Ultimate to Mega at Commander (8).");
+     ImGui::SeparatorText("Model mods");
+     {
+         int n = Host_ModsCount();
+diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
+index bbc4e2d..e3dc309 100644
+--- a/include/stag3000/evo_native.h
++++ b/include/stag3000/evo_native.h
+@@ -3,9 +3,10 @@
+ 
+ /* Battle digivolution (Forbs Hidden Mods, native only; src/stag3000/evo_native.inc, built into
+  * battle.c). Each party Digimon has an energy bar that fills as it deals and takes damage. Full,
+- * a Rookie that has a Champion form gets a third command, Digivolve: the Digi-Lab's digivolution
+- * effect plays on the battlefield and it fights as its Champion form (model, animations, stronger
+- * stats) for 3 turns, then returns. The battle copy of the Digimon changes; the party in the save
++ * a Rookie, Champion or Ultimate with a form one level up gets a third command, Digivolve (Rookie
++ * at any tamer rank, Champion from rank 5, Ultimate from rank 8): the Digi-Lab's digivolution
++ * effect plays on the battlefield and it fights as that form (model, animations, stronger stats)
++ * for 3 turns, then returns. The battle copy of the Digimon changes; the party in the save
+  * never does (it is reverted before the battle writes back). F1 > Forbs Hidden Mods toggles it. */
+ 
+ #ifdef DW2_NATIVE
+diff --git a/src/stag3000/battle.c b/src/stag3000/battle.c
+index 52d18da..e7d3c14 100644
+--- a/src/stag3000/battle.c
++++ b/src/stag3000/battle.c
+@@ -341,7 +341,7 @@ void Stg30_ResetPartyStats(void) {
+     s32 i;
+ 
+ #ifdef DW2_NATIVE
+-    Stg30_EvoReturnAll(); /* every battle end comes here: the Champion forms go back first */
++    Stg30_EvoReturnAll(); /* every battle end comes here: the digivolved forms go back first */
+ #endif
+     for (i = 0; i < 3; i++) {
+         if (Stg30_Battle.digis[i].state >= 3) {
+@@ -469,7 +469,7 @@ void Stg30_BattleUpdate(Actor *a0) {
+             default:
+ #ifdef DW2_NATIVE
+                 if (Stg30_EvoStep(0)) {
+-                    break; /* a Champion form returns before the commands */
++                    break; /* a digivolved form returns before the commands */
+                 }
+ #endif
+                 for (n2 = 0; n2 < 7; n2++) {
+@@ -787,7 +787,7 @@ void Stg30_BattleDestroy(Actor *a0) {
+ 
+ #ifdef DW2_NATIVE
+     for (i = 0; i < 3; i++) {
+-        Stg30_EvoReturnData(i); /* never into the save as a Champion form */
++        Stg30_EvoReturnData(i); /* never into the save as a digivolved form */
+     }
+ #endif
+     for (i = 0; i < 3; i++) {
+diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
+index 03146a6..14ccc0f 100644
+--- a/src/stag3000/evo_native.inc
++++ b/src/stag3000/evo_native.inc
+@@ -3,10 +3,11 @@
+  *
+  * Energy: 0..EVO_MAX per party slot, charged after every action from the HP lost since the last
+  * one: taking damage (EVO_TAKE for a whole max HP), dealing it (EVO_DEAL for a whole enemy max HP)
+- * and EVO_ACT for having had a turn. Full, a Rookie whose digivolution table names a Champion
+- * (Digi_GetEvolutionTarget at its DP) can choose Digivolve: that is its turn (it guards, turn type
++ * and EVO_ACT for having had a turn. Full, a Rookie, Champion or Ultimate whose digivolution table
++ * names a Digimon one level up (Digi_GetEvolutionTarget at its DP) can choose Digivolve, if the
++ * tamer's rank allows that step (Stg30_EvoRankNeeded): that is its turn (it guards, turn type
+  * 5). After the commands, before the turns run, the Digi-Lab's effect (model 0xDD9, animation 0xDDB,
+- * as Stg20_LabDigivolve) plays on it and halfway through it becomes the Champion: battle copy
++ * as Stg20_LabDigivolve) plays on it and halfway through it becomes the new form: battle copy
+  * digiId, the fighter's model and animations, HP / MP and attack / defense / speed up by EVO_BOOST
+  * percent. It fights 3 turns like that; at the start of the round after, the effect plays again and
+  * it returns, keeping the damage it took (its HP is never brought below 1 by the return). The end of
+@@ -33,8 +34,8 @@ typedef struct {
+ #define EVO_DEAL 45  /* energy for taking a whole max HP from enemies */
+ #define EVO_ACT 4    /* energy for having had a turn */
+ #define EVO_RATE 120 /* percent: every gain above times this (120 = 20 % faster) */
+-#define EVO_TURNS 3  /* turns it fights in the Champion form */
+-#define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the Champion form */
++#define EVO_TURNS 3  /* turns it fights in the new form */
++#define EVO_BOOST 30 /* percent more HP, MP, attack, defense and speed in the new form */
+ #define EVO_BOX_GROW 13 /* rows the party HUD box grows by (and is raised by) for the DP row */
+ #define EVO_FX_MODEL 0xDD9
+ #define EVO_FX_ANIM 0xDDB
+@@ -44,11 +45,11 @@ typedef struct {
+ typedef struct {
+     s32 energy;
+     s32 requested;  /* chose Digivolve this round */
+-    s32 turnsLeft;  /* > 0: in the Champion form; rounds still to end */
++    s32 turnsLeft;  /* > 0: digivolved; rounds still to end */
+     s32 revert;     /* return at the start of the next round */
+     /* the Rookie it was */
+     s32 fromId;
+-    s32 skillSlot; /* its battle copy's skill list slot holding the Champion's technique, -1 none */
++    s32 skillSlot; /* its battle copy's skill list slot holding the new form's technique, -1 none */
+     s32 skillOld;  /* what that slot held */
+     s32 hpBonus;
+     s32 mpBonus;
+@@ -84,15 +85,37 @@ typedef struct {
+     s32 duration;
+ } Stg30EvoFxArgs; /* Fx_ModelInit's 7 words (Stg20WarpFx) */
+ 
++/* The tamer rank (Save_GameState.rank, 0 Cadet .. 10 Master) a Digimon of level `from` (0 Rookie,
++ * 1 Champion, 2 Ultimate) needs to digivolve one level up in battle; -1: it can't (Mega). */
++static s32 Stg30_EvoRankNeeded(s32 from) {
++    switch (from) {
++    case 0:
++        return 0; /* Rookie -> Champion: any rank */
++    case 1:
++        return 5; /* Champion -> Ultimate: Pro */
++    case 2:
++        return 8; /* Ultimate -> Mega: Commander */
++    default:
++        return -1;
++    }
++}
++
+ static s32 Stg30_EvoTarget(s32 slot) {
+     DigiRosterEntry *d = &Stg30_Battle.digis[slot];
++    s32 from;
++    s32 need;
+     s32 t;
+ 
+-    if (d->state < 3 || d->digiId == 0 || Digi_GetRank(d->digiId) != 0) {
+-        return 0; /* only Rookies, for now */
++    if (d->state < 3 || d->digiId == 0) {
++        return 0;
++    }
++    from = Digi_GetRank(d->digiId);
++    need = Stg30_EvoRankNeeded(from);
++    if (need < 0 || Save_GameState.rank < need) {
++        return 0;
+     }
+     t = Digi_GetEvolutionTarget(d->digiId, d->dp);
+-    if (t == 0 || Digi_GetRank(t) != 1 || Digi_GetModelFile(t) <= 0) {
++    if (t == 0 || Digi_GetRank(t) != from + 1 || Digi_GetModelFile(t) <= 0) {
+         return 0;
+     }
+     return t;
+@@ -268,7 +291,7 @@ static void Stg30_EvoBecome(s32 slot) {
+     e->energy = 0;
+     e->requested = 0;
+     e->turnsLeft = EVO_TURNS + 1; /* the round it digivolves in (it guards) ends first */
+-    /* the Champion's own technique (Digi_GetLearnedSkill, as the Digi-Lab gives it), for these
++    /* the new form's own technique (Digi_GetLearnedSkill, as the Digi-Lab gives it), for these
+      * turns only: in a free slot of its list, else in the last one */
+     e->skillSlot = -1;
+     {
+@@ -292,7 +315,7 @@ static void Stg30_EvoBecome(s32 slot) {
+     printf("[evo] slot %d digivolves: %d -> %d\n", slot, e->fromId, t);
+ }
+ 
+-/* Back to the Rookie: data only (the end of the battle calls this for every slot). */
++/* Back to the form it was: data only (the end of the battle calls this for every slot). */
+ static void Stg30_EvoReturnData(s32 slot) {
+     Stg30Evo *e = &Stg30_Evo[slot];
+     DigiRosterEntry *d = &Stg30_Battle.digis[slot];
+@@ -312,7 +335,7 @@ static void Stg30_EvoReturnData(s32 slot) {
+         }
+     }
+     if (e->skillSlot >= 0) {
+-        d->skills[e->skillSlot] = (u8)e->skillOld; /* the Champion's technique goes with it */
++        d->skills[e->skillSlot] = (u8)e->skillOld; /* the new form's technique goes with it */
+         e->skillSlot = -1;
+     }
+     d->maxMp = e->maxMp;
+@@ -339,8 +362,8 @@ static void Stg30_EvoReturnData(s32 slot) {
+     printf("[evo] slot %d returns to %d\n", slot, e->fromId);
+ }
+ 
+-/* The end of the battle: every Champion form back at once (model too: the victory poses use the
+- * Rookie's animations), before the party is written back. */
++/* The end of the battle: every digivolved form back at once (model too: the victory poses use the
++ * original's animations), before the party is written back. */
+ static void Stg30_EvoReturnAll(void) {
+     s32 i;
+ 
+@@ -358,7 +381,7 @@ static void Stg30_EvoReturnAll(void) {
+     }
+ }
+ 
+-/* The end of a round (battle.c): count the Champion forms' turns. */
++/* The end of a round (battle.c): count the digivolved forms' turns. */
+ static void Stg30_EvoRoundEnd(void) {
+     s32 i;
+ 
+@@ -368,7 +391,7 @@ static void Stg30_EvoRoundEnd(void) {
+         e->requested = 0;
+         if (e->turnsLeft != 0) {
+             if (--e->turnsLeft == 0 || Stg30_Battle.digis[i].hp == 0) {
+-                e->turnsLeft = 1; /* still the Champion until the effect returns it */
++                e->turnsLeft = 1; /* still digivolved until the effect returns it */
+                 e->revert = 1;
+             }
+         }
+@@ -678,7 +701,7 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+         return;
+     }
+     gauge[n].fileId = 0;
+-    /* the gauge: energy; full and ready, it flashes; as the Champion, the turns it has left */
++    /* the gauge: energy; full and ready, it flashes; digivolved, the turns it has left */
+     if (e->turnsLeft != 0 || e->revert) {
+         num = e->revert ? 0 : e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft;
+         den = EVO_TURNS;
+@@ -690,7 +713,7 @@ void Stg30_EvoDrawBar(s32 slot, void *parts) {
+         }
+     }
+     Stg30_SetGaugeParts(gauge, 0x400, num, den);
+-    /* under it, as MP's numbers: how full, "62/100%" (as the Champion: the turns left, in %) */
++    /* under it, as MP's numbers: how full, "62/100%" (digivolved: the turns left, in %) */
+     pct = e->turnsLeft != 0 || e->revert ? (e->revert ? 0 : (e->turnsLeft > EVO_TURNS ? EVO_TURNS : e->turnsLeft) * 100 / EVO_TURNS)
+                                          : Stg30_EvoTarget(slot) != 0 ? e->energy * 100 / EVO_MAX : 0;
+     Gfx_SetPartsNumber((GfxPart *)gauge, 0x100, 3, pct);
+-- 
+2.43.0
+
