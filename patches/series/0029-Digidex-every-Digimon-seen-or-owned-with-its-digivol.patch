@@ -1,4 +1,4 @@
-From 743e3855e87fb3feb9becafd70bbe730a279d601 Mon Sep 17 00:00:00 2001
+From d266978be9ea76f9f41ee6a4a2ecf99567c643ef Mon Sep 17 00:00:00 2001
 From: Forb Hidden Gems <348521123+ForbHiddenGems@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 11:47:12 +0000
 Subject: [PATCH 29/29] Digidex: every Digimon, seen or owned, with its
@@ -13,9 +13,9 @@ their name and model; owned ones their technique too.
 
 What the tamer has met lives in the save itself, in GameState bytes the
 game never touches (0xFD4..0x1003, 0x1048..0x1057; zero in every retail
-save): a seen and an owned bit per Digimon id. Enemies are seen at battle
-start; the roster counts as owned when the menu opens and at battle start;
-a battle digivolution owns its new form. Every save starts empty.
+save): a seen and an owned bit per Digimon id. At battle start the enemies
+are seen and the party owned; a battle digivolution owns its new form.
+Every save starts empty.
 
 Windows are the top menu's own box sprite drawn in slices to any size. The
 model is fitted to its window from where its bones project. F2 (dev build)
@@ -28,12 +28,12 @@ Claude-Session: https://claude.ai/code/session_01B1oHeiADE8njqFxkaQnJAX
  host/devui.cpp              |  12 +
  host/host.h                 |   3 +
  host/sdl.c                  |  11 +
- include/main/digidex.h      |  30 ++
+ include/main/digidex.h      |  28 ++
  src/main/156C.c             |   6 +
- src/main/digidex.c          | 694 ++++++++++++++++++++++++++++++++++++
- src/main/topmenu.c          |  68 ++++
- src/stag3000/evo_native.inc |  11 +
- 8 files changed, 835 insertions(+)
+ src/main/digidex.c          | 684 ++++++++++++++++++++++++++++++++++++
+ src/main/topmenu.c          |  67 ++++
+ src/stag3000/evo_native.inc |  14 +
+ 8 files changed, 825 insertions(+)
  create mode 100644 include/main/digidex.h
  create mode 100644 src/main/digidex.c
 
@@ -105,10 +105,10 @@ index 6de2937..35e4a0a 100644
  }
 diff --git a/include/main/digidex.h b/include/main/digidex.h
 new file mode 100644
-index 0000000..b76ab55
+index 0000000..5d72ffa
 --- /dev/null
 +++ b/include/main/digidex.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,28 @@
 +#ifndef MAIN_DIGIDEX_H
 +#define MAIN_DIGIDEX_H
 +
@@ -122,12 +122,10 @@ index 0000000..b76ab55
 +
 +#include "common.h"
 +
-+/* 0 unmet, 1 seen (fought), 2 owned (had it, or digivolved into it) */
++/* 0 unmet, 1 seen (fought against), 2 owned (fought with it, or digivolved into it in battle) */
 +s32 Dex_Level(s32 digiId);
 +void Dex_MarkSeen(s32 digiId);
 +void Dex_MarkOwned(s32 digiId);
-+/* every Digimon in the roster (party and bank) counts as owned */
-+void Dex_ScanRoster(void);
 +/* a box of the top menu's sprite, any size, at screen x, y (0..319, 0..239) */
 +void Dex_DrawBox(s32 x, s32 y, s32 w, s32 h);
 +/* the same in ordering table layer `layer` (0: the menus' own) */
@@ -165,17 +163,18 @@ index d8377e0..9d2152d 100644
  TaskDesc **Task_DescTable[] = {
 diff --git a/src/main/digidex.c b/src/main/digidex.c
 new file mode 100644
-index 0000000..ae81c33
+index 0000000..e2687e9
 --- /dev/null
 +++ b/src/main/digidex.c
-@@ -0,0 +1,694 @@
+@@ -0,0 +1,684 @@
 +/* Digidex (Forbs Hidden Mods, native only; include/main/digidex.h).
 + *
 + * Opened from the top menu's Digidex entry (task 0x17, topmenu.c). A list of every Digimon in the
 + * base data table (0xC6C, id order) on the left; on the right the selected one's model, turning,
 + * and what it is: name, level and type, its technique, what it digivolves from and, by DP, into.
-+ * Unmet Digimon are a black silhouette named "?????"; seen ones (fought) show name and model;
-+ * owned ones (had it, or digivolved into it in battle) show their technique too. Up / down move,
++ * Unmet Digimon are a black silhouette named "?????"; seen ones (fought against) show name and
++ * model; owned ones (fought with it in the party, or digivolved into it in battle) show their
++ * technique too. Every save starts empty. Up / down move,
 + * left / right a page, Triangle or Circle closes. Windows are the top menu's box sprite (0x457
 + * cells 1 and 2) drawn in slices to any size. */
 +#ifdef DW2_NATIVE
@@ -221,16 +220,6 @@ index 0000000..ae81c33
 +    if (digiId > 0 && digiId <= 255) {
 +        Dex_MarkSeen(digiId);
 +        *Dex_OwnedByte(digiId) |= 1 << (digiId & 7);
-+    }
-+}
-+
-+void Dex_ScanRoster(void) {
-+    s32 i;
-+
-+    for (i = 0; i < 0x24; i++) {
-+        if (Save_GameState.elems[i].state != 0) {
-+            Dex_MarkOwned(Save_GameState.elems[i].digiId);
-+        }
 +    }
 +}
 +
@@ -691,7 +680,6 @@ index 0000000..ae81c33
 +    }
 +    GsSetAmbient(q[0], q[1], q[2]);
 +    GsSetLightMode(0);
-+    Dex_ScanRoster();
 +}
 +
 +void Menu_DigidexDestroy(Actor *a) {
@@ -864,7 +852,7 @@ index 0000000..ae81c33
 +
 +#endif /* DW2_NATIVE */
 diff --git a/src/main/topmenu.c b/src/main/topmenu.c
-index 23af953..06f16e6 100644
+index 23af953..7b48ce3 100644
 --- a/src/main/topmenu.c
 +++ b/src/main/topmenu.c
 @@ -9,6 +9,18 @@
@@ -886,19 +874,18 @@ index 23af953..06f16e6 100644
  /* Small data this unit defines: initialised ones go to .sdata, the rest to .sbss in
   * game.h's order. Retail reaches them with %gp_rel here. */
  s32 Menu_TopMenuResult;
-@@ -282,6 +294,11 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -282,6 +294,10 @@ void Menu_TopMenuTask(Actor *a0) {
          Menu_Ctx->topMenuResult = 0;
          Menu_TopMenuResult = 0;
          *(MenuGridLayout *)w->gridSize = *(MenuGridLayout *)Cd_GetFileEntry(0x5130005);
 +#ifdef DW2_NATIVE
 +        w->gridSize[1] = DEX_MENU_ROW + 1;
 +        Menu_DexText = -1;
-+        Dex_ScanRoster();
 +#endif
          Menu_Ctx->flags = 0;
          v = Sys_State.gameMode;
          if (v / 256 != 2) {
-@@ -319,6 +336,15 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -319,6 +335,15 @@ void Menu_TopMenuTask(Actor *a0) {
                  break;
              }
              Text_PrintIdList(&w->option0Text, (TextIdListEntry *)Cd_GetFileEntry(0x5130003), 2);
@@ -914,7 +901,7 @@ index 23af953..06f16e6 100644
              Text_Close((Menu_Ctx->flags & 1) ? &w->option5Text : &w->option6Text);
              Text_SetColor(w->option1Text, (Menu_Ctx->flags >> 4) & 1);
              Text_SetColor(w->option2Text, (Menu_Ctx->flags >> 4) & 1);
-@@ -331,8 +357,23 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -331,8 +356,23 @@ void Menu_TopMenuTask(Actor *a0) {
          case 1:
              if (Menu_MoveGridCursorP1((s32)w->cursor, (s32)w->gridSize) != 0) {
                  snd = 0xC;
@@ -938,7 +925,7 @@ index 23af953..06f16e6 100644
                  if (k == 5 && (Menu_Ctx->flags & 1)) {
                      k = 6;
                  }
-@@ -367,6 +408,9 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -367,6 +407,9 @@ void Menu_TopMenuTask(Actor *a0) {
              case 0:
              default:
                  Text_CloseArray(&w->option0Text, 8);
@@ -948,7 +935,7 @@ index 23af953..06f16e6 100644
                  Task_NextState2(a0);
                  break;
              case 1:
-@@ -380,6 +424,11 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -380,6 +423,11 @@ void Menu_TopMenuTask(Actor *a0) {
              switch (a0->stateLevel2) {
              case 0:
              default:
@@ -960,7 +947,7 @@ index 23af953..06f16e6 100644
                  Task_Create(tbl[w->selection].field_0, slot, tbl[w->selection].field_2);
                  Task_NextState2(a0);
                  break;
-@@ -401,6 +450,9 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -401,6 +449,9 @@ void Menu_TopMenuTask(Actor *a0) {
          case 0:
          default:
              Text_CloseArray(&w->option0Text, 8);
@@ -970,7 +957,7 @@ index 23af953..06f16e6 100644
              Menu_TopMenuResult = Menu_Ctx->topMenuResult;
              Task_NextState1(a0);
              Gfx_FadeOutToBlack(0x20);
-@@ -441,6 +493,22 @@ void Menu_TopMenuDraw(Actor *actor) {
+@@ -441,6 +492,22 @@ void Menu_TopMenuDraw(Actor *actor) {
                  default:
                      Menu_SetPartsGridPos(obj, 2, &w->cursor, &w->gridSize);
                      Gfx_SetPartsPalette(obj, 2, (actor->elapsed >> 2) & 3);
@@ -994,7 +981,7 @@ index 23af953..06f16e6 100644
                  case 1:
                      Gfx_SetPartsNumber(obj, 2, 8, Save_GameStatePtr->bits);
 diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
-index 7b0354b..841c1a4 100644
+index 7b0354b..b37ce31 100644
 --- a/src/stag3000/evo_native.inc
 +++ b/src/stag3000/evo_native.inc
 @@ -16,6 +16,7 @@
@@ -1005,23 +992,26 @@ index 7b0354b..841c1a4 100644
  
  extern u8 Digi_GetEvolutionTarget(s32 id, s32 val);
  extern void Mem_Free(ActorWork *arg0);
-@@ -161,6 +162,15 @@ static void Stg30_EvoSeenNow(void) {
+@@ -161,6 +162,18 @@ static void Stg30_EvoSeenNow(void) {
  }
  
  static void Stg30_EvoBattleInit(void) {
 +    s32 i;
 +
-+    /* Digidex: every enemy in this battle is seen, the party owned */
-+    for (i = 3; i < 6; i++) {
++    /* Digidex: every enemy in this battle is seen, the Digimon fighting it owned */
++    for (i = 0; i < 6; i++) {
 +        if (Stg30_Battle.digis[i].digiId != 0) {
-+            Dex_MarkSeen(Stg30_Battle.digis[i].digiId);
++            if (i < 3) {
++                Dex_MarkOwned(Stg30_Battle.digis[i].digiId);
++            } else {
++                Dex_MarkSeen(Stg30_Battle.digis[i].digiId);
++            }
 +        }
 +    }
-+    Dex_ScanRoster();
      Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
      Stg30_EvoFxSlot = NULL;
      Stg30_EvoLift = Host_FpBattleEvo() ? EVO_BOX_GROW : 0;
-@@ -329,6 +339,7 @@ static void Stg30_EvoBecome(s32 slot) {
+@@ -329,6 +342,7 @@ static void Stg30_EvoBecome(s32 slot) {
      }
      e->revert = 0;
      Stg30_EvoHpSeen[slot] = d->hp;

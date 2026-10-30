@@ -95,8 +95,9 @@ belong in patches.
   never changed.
 - **Digidex:** a new entry in the game's menu. Every Digimon, with its model turning, its level,
   type and technique, what it digivolves from and what it becomes at which DP. Ones you haven't
-  met are black silhouettes named "?????"; fighting one shows it, owning it (or digivolving into
-  it in battle) shows its technique too. It's kept inside your save, and every save starts empty.
+  met are black silhouettes named "?????". Fighting against one shows it; fighting with it in your
+  party (or digivolving into it in battle) makes it owned and shows its technique too. It's kept
+  inside your save, and every save starts empty.
 - **Model mods:** the game reads replacement files from a `mods` folder next to `dw2.exe` (or in
   `%APPDATA%\DW2-Online\mods`, or the folder named in `mods-folder.txt` next to the exe), named by
   game file number (`005C.bin`). A label may follow the number after a space, `_` or `-`
