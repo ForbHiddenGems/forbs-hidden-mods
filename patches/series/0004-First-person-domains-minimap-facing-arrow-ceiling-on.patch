@@ -1,7 +1,7 @@
 From 7cd82273b9bad8d46fc025d6229f5447b065ad87 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Sun, 25 Oct 2026 23:36:21 +0000
-Subject: [PATCH 04/27] First-person domains: minimap facing arrow, ceiling on
+Subject: [PATCH 04/28] First-person domains: minimap facing arrow, ceiling on
  / off setting
 
 In first person a yellow arrow over the beetle on both automap views points

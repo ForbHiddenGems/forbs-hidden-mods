@@ -99,6 +99,8 @@ belong in patches.
   (`005C Agumon model.bin`); only the first 4 characters count. Files numbered 0xE5B and
   above are new files, which is how new Digimon get their own model and animations.
 - The dev build's F2 overlay reads tables from `mods` too, so new Digimon and items show up there.
+- **Testing tools (dev build, F2 > Save, Edit on):** pick the tamer rank by title, and **Fill DP**
+  fills the DP gauge of every party Digimon that can digivolve, in battle.
 
 All changes sit under `#ifdef DW2_NATIVE`. The PS1 build is unchanged.
 

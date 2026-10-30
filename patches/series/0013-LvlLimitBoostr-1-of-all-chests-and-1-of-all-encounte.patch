@@ -1,7 +1,7 @@
 From 28d89134ef905eeebc24b68c07cff3dd32244ceb Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 22:26:42 +0000
-Subject: [PATCH 13/27] LvlLimitBoostr: '1% of all chests' and '1% of all ?
+Subject: [PATCH 13/28] LvlLimitBoostr: '1% of all chests' and '1% of all ?
  encounters' toggles
 
 F1 > Display > LvlLimitBoostr, both on by default (boost_chests,
