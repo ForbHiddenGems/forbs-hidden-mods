@@ -97,6 +97,50 @@ frame from the first key to the last. **Loop to** sets the frame the animation l
 (0 = the start). -1 means it plays once and holds the last frame. Keep the action names'
 numbers and their custom properties; they tell the game which animation is which.
 
+### What each animation is for
+
+The number is the `NNN` in the action's name. Numbers come in groups of ten, one animation file
+per group (0-9, 10-19, ... 100), which is why Export writes several animation files.
+
+**Battle** (the ones that matter most):
+
+| Number | When it plays |
+| --- | --- |
+| **0** | Standing idle. Also the Status screen, the Digidex and other menus |
+| **10** | Taking a hit without being knocked back (a flinch) |
+| **20** | Knocked back: first hop (optional: skipped when the Digimon has none) |
+| **21** | Knocked back: second hop (optional, as 20) |
+| **22** | Knocked back: landing (always played) |
+| **50** | Using a technique, first style |
+| **60** | Using a technique, second style |
+| **70** | Using a technique, third style |
+| **80** | Victory pose after a won battle |
+| **90** | Getting back up after a knock-back, before idle |
+| **100** | Fainted, lying down (also a fainted Digimon at the start of a battle) |
+
+Each technique is set to use one of the three technique styles, and a Digimon can learn many
+techniques, so give all three a proper animation. A knock-back plays 20, 21 and 22, then 90 and
+back to 0, or 100 if the hit knocked it out.
+
+**Domains:**
+
+| Number | When it plays |
+| --- | --- |
+| **40** | Standing on the domain map (a wandering enemy) |
+| **41** | Walking on the domain map |
+| **42-45** | Used by some other domain objects; not confirmed for Digimon |
+
+**30-37** are used by the city's walking characters, most likely the people rather than
+Digimon.
+
+Most important: 0, 10, 22, 50, 60, 70 and 100 (nearly every battle uses them). Then 80 and 90,
+then 40 and 41 if the Digimon wanders in a domain. Don't delete any: a deleted one is exported as a
+still pose, so the Digimon just freezes at that moment.
+
+**Checking them in the game:** export, add the Digimon in the dev build (**F2 > Save > Edit >
+Party > Add Digimon**), and battle with it. Let an enemy hit it hard to see the knock-back and
+faint animations; **Fill DP** (F2 > Save) lets you check the battle digivolution too.
+
 **Skeleton**: you can move bones (in Edit Mode), and add or remove them. The game allows 8
 levels of parent and child, and 64 bones.
 
