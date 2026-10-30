@@ -87,7 +87,7 @@ Download the mods next to it (or download the repository as a zip from GitHub an
 
 ```
 cd C:\
-git clone https://github.com/ForbHiddenGems/forbs-hidden-mods.git
+git clone https://github.com/YOUR-GITHUB-NAME/forbs-hidden-mods.git
 cd C:\forbs-hidden-mods
 ```
 
@@ -163,7 +163,8 @@ python forbs.py extract
 python forbs.py addon
 ```
 
-`extract` copies the Digimon models and the game's tables out of your `dw2.pak` into `game-data`.
+`extract` copies every data file out of your `dw2.pak` into `game-data` (a few hundred MB; movies and
+streamed audio are left out). Run it again any time; unchanged files are skipped.
 `addon` makes `dist\dw2_digimon_addon.zip`.
 
 In Blender: **Edit > Preferences > Add-ons**. Open the arrow at the top right, choose **Install from

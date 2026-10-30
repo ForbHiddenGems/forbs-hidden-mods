@@ -29,7 +29,7 @@ forbs-hidden-mods\
   forbs.py                        the one script
   patches\  tools\  blender-addon\  the mods (what's on GitHub)
   DW2-PC\       game source and your builds   (made by setup; never uploaded)
-  game-data\    files from your dw2.pak for Blender  (never uploaded)
+  game-data\    every file from your dw2.pak (for Blender and tools; never uploaded)
   mods\         your Digimon: every build AND the Blender add-on use this one folder
   dist\         the Blender add-on zip to install
 ```
@@ -128,7 +128,7 @@ Python 3. `dw2render.py` also needs `numpy` and `Pillow`.
 
 | Script | Use |
 | --- | --- |
-| `dw2_extract_models.py` | Copies the Digimon models and animations out of your own `dw2.pak` into `dw2_models.zip`. With `--data`, copies the Digimon, technique, item and encounter tables into `dw2_data.zip`. Only reads the pak. |
+| `dw2_extract_models.py` | Copies the Digimon models and animations out of your own `dw2.pak` into `dw2_models.zip`. With `--data`, copies the Digimon, technique, item and encounter tables into `dw2_data.zip`. With `--all`, every data file in the pak (what `forbs.py extract` uses). Only reads the pak. |
 | `dw2newdigi.py` | Adds a new Digimon as a copy of an existing one under its own number and name, written as replacement table files for `mods`. |
 | `dw2render.py` | Software preview: draws a model posed by an animation into a GIF. |
 | `dw2model.py`, `dw2digi.py` | Readers and writers for the model, animation and Digimon table formats, used by the scripts above. |

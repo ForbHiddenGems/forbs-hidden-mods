@@ -5,8 +5,10 @@
     python dw2_extract_models.py --data     the Digimon / item / technique / encounter tables
                                             -> dw2_data.zip (small)
     add a path to dw2.pak at the end if it is not found by itself
+    python dw2_extract_models.py --all      every data file in the pack (a few thousand; movies and
+                                            streamed audio are left out) -> dw2_all.zip
     --out FOLDER                            write the files loose into FOLDER instead of a zip
-                                            (forbs.py extract does this into game-data)
+                                            (forbs.py extract does --all into game-data)
 """
 import os
 import struct
@@ -15,8 +17,8 @@ import zipfile
 
 DATA_FILES = (0xCB9, 0xCBA, 0xCBB)
 # Digimon base data (DIGIMNDT), encounter / join sets, techniques (WAZADATA), items (ITEMDATA),
-# the model list, system text, the battle HUD's layout (0x1A1) and its sprites (0x13B)
-TABLE_FILES = (0xC6C, 0xC6F, 0x25B, 0x45E, 0x1F8, 0x1FD, 0x1A1, 0x13B)
+# the model list, system text, the battle HUD's layout (0x1A1) and its sprites (0x13B), menu tables (0x513: tamer rank titles)
+TABLE_FILES = (0xC6C, 0xC6F, 0x25B, 0x45E, 0x1F8, 0x1FD, 0x1A1, 0x13B, 0x513)
 
 
 _argv = sys.argv[1:]
@@ -27,6 +29,7 @@ if "--out" in _argv:
     del _argv[_i:_i + 2]
 ARGS = [a for a in _argv if not a.startswith("--")]
 DATA_ONLY = "--data" in _argv
+ALL = "--all" in _argv
 
 
 def find_pak():
@@ -73,7 +76,9 @@ def main():
     print("reading", path)
     pak = Pak(path)
     want = set(DATA_FILES) | set(TABLE_FILES)
-    for fid in ([] if DATA_ONLY else DATA_FILES):
+    if ALL:
+        want |= set(range(1, pak.count))
+    for fid in ([] if DATA_ONLY or ALL else DATA_FILES):
         d = pak.get(fid)
         base = struct.unpack_from("<I", d, 0)[0]
         p = base
@@ -93,12 +98,15 @@ def main():
         for fid in sorted(want):
             d = pak.get(fid)
             if d:
-                with open(os.path.join(OUT_DIR, "%04X.bin" % fid), "wb") as f:
-                    f.write(d)
+                p = os.path.join(OUT_DIR, "%04X.bin" % fid)
+                if not (os.path.isfile(p) and os.path.getsize(p) == len(d)
+                        and open(p, "rb").read() == d):
+                    with open(p, "wb") as f:
+                        f.write(d)
                 n += 1
         print("wrote %d files to %s" % (n, OUT_DIR))
         return
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dw2_data.zip" if DATA_ONLY else "dw2_models.zip")
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dw2_all.zip" if ALL else "dw2_data.zip" if DATA_ONLY else "dw2_models.zip")
     n = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for fid in sorted(want):
