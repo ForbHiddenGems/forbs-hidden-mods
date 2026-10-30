@@ -1,7 +1,7 @@
 From cea71cf801f50f8241c253e5f114825a2e122d89 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 20:17:12 +0000
-Subject: [PATCH 07/26] First-person domains: minimap pointer on the beetle's
+Subject: [PATCH 07/27] First-person domains: minimap pointer on the beetle's
  own marker
 
 Instead of a large arrow over the marker, a small white triangle on the side
