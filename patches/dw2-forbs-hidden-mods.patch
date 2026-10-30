@@ -246,10 +246,20 @@ index 9b87041..3fdf602 100644
  } DevEditKind;
  
 diff --git a/host/devui.cpp b/host/devui.cpp
-index 3364a80..a8df4bb 100644
+index 3364a80..c1aa105 100644
 --- a/host/devui.cpp
 +++ b/host/devui.cpp
-@@ -1183,20 +1183,46 @@ void edit_log(void) {
+@@ -22,6 +22,9 @@
+ #include "host/devsnap.h"
+ #include "host/devui.h"
+ 
++extern "C" int Host_DexShowAll(void);
++extern "C" void Host_SetDexShowAll(int on);
++
+ namespace {
+ 
+ SDL_Window *g_window;
+@@ -1183,20 +1186,55 @@ void edit_log(void) {
      }
  }
  
@@ -298,14 +308,23 @@ index 3364a80..a8df4bb 100644
 +    }
 +    ImGui::SameLine();
 +    ImGui::TextDisabled("in battle: every party Digimon that can digivolve gets a full DP gauge");
++    {
++        bool all = Host_DexShowAll() != 0;
++
++        if (ImGui::Checkbox("Digidex: show all", &all)) {
++            Host_SetDexShowAll(all);
++        }
++        ImGui::SameLine();
++        ImGui::TextDisabled("every Digimon shown as owned; the save is not changed");
++    }
  }
  
  void edit_digi(const DevSnap &s, int slot) {
 diff --git a/host/host.h b/host/host.h
-index 20de1e5..889e12b 100644
+index 20de1e5..a957648 100644
 --- a/host/host.h
 +++ b/host/host.h
-@@ -85,6 +85,41 @@ void Host_SmoothScene(void);
+@@ -85,6 +85,44 @@ void Host_SmoothScene(void);
   * values (n <= 16) and whether it is a shot set at once (hard: a change is a cut) or a camera that
   * moves smoothly (backend/pgxp.h Pgxp_Camera). */
  void Host_SmoothCamera(const int *v, int n, int hard);
@@ -339,6 +358,9 @@ index 20de1e5..889e12b 100644
 + * default; src/stag3000/evo_native.inc). */
 +void Host_SetFpBattleEvo(int on);
 +int Host_FpBattleEvo(void);
++/* Digidex (src/main/digidex.c): F2 dev build "show all", every Digimon shown as owned; off */
++void Host_SetDexShowAll(int on);
++int Host_DexShowAll(void);
 +int Host_FpGetNote(int i);
 +void Host_FpSetNote(int i, int v);
 +unsigned int Host_FpRandom(void);
@@ -347,7 +369,7 @@ index 20de1e5..889e12b 100644
  /* PG.3, for the game C (DW2_NATIVE): extra screen pixels on each side of a picture `width` wide
   * in 16:9 (0 in 4:3), so culls can let objects into the sides; and a mark that the frame being
   * built is a 2D picture that keeps black sides (pillarbox). */
-@@ -117,6 +152,11 @@ unsigned short Host_PadParseButtons(const char *names);
+@@ -117,6 +155,11 @@ unsigned short Host_PadParseButtons(const char *names);
   * with disc sector `lba` after its 4-byte header: subheader (8) + 2328 bytes (Form 1: the 2048
   * data bytes, then zeros) and returns the file id, or -1 (no file there; body is zero). */
  void Host_PakOpen(const char *path, const char *disc, int no_window);
@@ -607,7 +629,7 @@ index 0000000..301d4ae
 +    return mod_count;
 +}
 diff --git a/host/sdl.c b/host/sdl.c
-index 6e936ad..6de2937 100644
+index 6e936ad..35e4a0a 100644
 --- a/host/sdl.c
 +++ b/host/sdl.c
 @@ -64,7 +64,7 @@
@@ -639,7 +661,7 @@ index 6e936ad..6de2937 100644
  static int shown_vsync;          /* main thread: the renderer's vsync */
  static int vsync_ok = 1;         /* main thread: vsync could be turned on */
  static SDL_Texture *smooth_wrap; /* main thread: the smooth picture as a renderer texture */
-@@ -496,6 +509,106 @@ void Host_SmoothLayer(int id, const void *start, const void *end, int x, int y)
+@@ -496,6 +509,117 @@ void Host_SmoothLayer(int id, const void *start, const void *end, int x, int y)
      PsxHd_SmoothLayer(id, (uintptr_t)start, (uintptr_t)end, x, y);
  }
  
@@ -713,6 +735,17 @@ index 6e936ad..6de2937 100644
 +    return !SDL_GetAtomicInt(&fp_nobattleevo);
 +}
 +
++/* Digidex: F2 (dev build) shows every Digimon; never saved, off at start */
++static SDL_AtomicInt dex_showall;
++
++void Host_SetDexShowAll(int on) {
++    SDL_SetAtomicInt(&dex_showall, on != 0);
++}
++
++int Host_DexShowAll(void) {
++    return SDL_GetAtomicInt(&dex_showall);
++}
++
 +int Host_FpGetNote(int i) {
 +    return i >= 0 && i < 16 ? fp_notes[i] : 0;
 +}
@@ -746,7 +779,7 @@ index 6e936ad..6de2937 100644
  void Host_SmoothLattice(int px, int py, int pz) {
      Pgxp_Lattice(px, py, pz);
  }
-@@ -933,6 +1046,12 @@ void Host_PumpEvents(void) {
+@@ -933,6 +1057,12 @@ void Host_PumpEvents(void) {
                  if (e.key.scancode == SDL_SCANCODE_F9) {
                      request(REQ_SMOOTH);
                  }
@@ -759,7 +792,7 @@ index 6e936ad..6de2937 100644
                  if (e.key.scancode == SDL_SCANCODE_F3) {
                      request(REQ_SPEED);
                  }
-@@ -1019,6 +1138,46 @@ void Host_GameEvents(void) {
+@@ -1019,6 +1149,46 @@ void Host_GameEvents(void) {
                     PsxHd_Smooth() && !PsxHd_Gpu() ? ": needs the GPU renderer" : "");
              Settings_Set(SET_SMOOTH, PsxHd_Smooth());
          }
@@ -806,7 +839,7 @@ index 6e936ad..6de2937 100644
          fflush(stdout);
      }
      if (r & REQ_SHARPEN) {
-@@ -1044,6 +1203,20 @@ void Host_GameEvents(void) {
+@@ -1044,6 +1214,20 @@ void Host_GameEvents(void) {
          Settings_Set(SET_SMOOTH, PsxHd_Smooth());
          fflush(stdout);
      }
@@ -1011,6 +1044,40 @@ index f0e5eaf..7706915 100644
  }
  
  } // namespace
+diff --git a/include/main/digidex.h b/include/main/digidex.h
+new file mode 100644
+index 0000000..5d72ffa
+--- /dev/null
++++ b/include/main/digidex.h
+@@ -0,0 +1,28 @@
++#ifndef MAIN_DIGIDEX_H
++#define MAIN_DIGIDEX_H
++
++/* Digidex (Forbs Hidden Mods, native only; src/main/digidex.c): every Digimon, seen or owned, with
++ * where it digivolves from and to. Opened from the top menu's Digidex entry. What the tamer has
++ * met is kept in the save itself, in GameState bytes the game never uses (0xFD4..0x1003 and
++ * 0x1048..0x1057, zero in every retail save): a seen bit per Digimon id (0xFD4, 32 bytes) and
++ * an owned bit (ids 0..127 at 0xFF4, 128..255 at 0x1048). Owned implies seen. */
++
++#ifdef DW2_NATIVE
++
++#include "common.h"
++
++/* 0 unmet, 1 seen (fought against), 2 owned (fought with it, or digivolved into it in battle) */
++s32 Dex_Level(s32 digiId);
++void Dex_MarkSeen(s32 digiId);
++void Dex_MarkOwned(s32 digiId);
++/* a box of the top menu's sprite, any size, at screen x, y (0..319, 0..239) */
++void Dex_DrawBox(s32 x, s32 y, s32 w, s32 h);
++/* the same in ordering table layer `layer` (0: the menus' own) */
++void Dex_DrawBoxLayer(s32 x, s32 y, s32 w, s32 h, s32 layer);
++
++/* host (F2, dev build): show every Digimon as owned in the Digidex, without changing the save */
++int Host_DexShowAll(void);
++void Host_SetDexShowAll(int on);
++
++#endif
++#endif
 diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
 new file mode 100644
 index 0000000..b916c41
@@ -1126,6 +1193,30 @@ index 0000000..a719d78
 +#endif
 +
 +#endif /* STAG4000_FPVIEW_H */
+diff --git a/src/main/156C.c b/src/main/156C.c
+index d8377e0..9d2152d 100644
+--- a/src/main/156C.c
++++ b/src/main/156C.c
+@@ -11,6 +11,9 @@ extern s32 Task_Run(s32);
+ extern TaskDesc Text_PortraitDesc, Gfx_TexSlotDesc, Menu_NameEntryDesc, Sys_GameModeDesc, Menu_TopMenuDesc, Menu_SubMenuDesc;
+ extern TaskDesc Menu_StatusDesc, Menu_ItemUseDesc, Menu_ItemDesc, Menu_DigiListDesc, Menu_DigiStatusDesc, Menu_SkillListDesc;
+ extern TaskDesc Task_SpawnListDesc, Text_WinFrameDesc, Text_BoxDesc, Gfx_ShadowDesc, Fx_ModelDesc;
++#ifdef DW2_NATIVE
++extern TaskDesc Menu_DigidexDesc;
++#endif
+ extern TaskDesc *Stg00_TaskDescs[], *Stg10_TaskDescs[], *Stg11_TaskDescs[], *Stg20_TaskDescs[];
+ extern TaskDesc *Stg30_TaskDescs[], *Stg35_TaskDescs[], *Stg40_TaskDescs[];
+ 
+@@ -23,6 +26,9 @@ TaskDesc *Task_MainDescs[] = {
+     0, &Sys_GameModeDesc, 0, &Task_SpawnListDesc, &Text_WinFrameDesc, &Text_PortraitDesc, &Gfx_ShadowDesc, &Fx_ModelDesc,
+     0, &Text_BoxDesc, &Gfx_TexSlotDesc, &Menu_TopMenuDesc, &Menu_SubMenuDesc, &Menu_StatusDesc, &Menu_ItemUseDesc, &Menu_ItemDesc,
+     &Menu_DigiListDesc, &Menu_DigiStatusDesc, &Menu_SkillListDesc, &Menu_DigiStatusDesc, &Menu_DigiStatusDesc, &Menu_DigiStatusDesc, &Menu_NameEntryDesc,
++#ifdef DW2_NATIVE
++    &Menu_DigidexDesc, /* 0x017: the Digidex (src/main/digidex.c), opened from the top menu */
++#endif
+ };
+ /* Task ids are (row << 8) | index; row 0 is main, rows 1-7 the overlay that is loaded. */
+ TaskDesc **Task_DescTable[] = {
 diff --git a/src/main/cd.c b/src/main/cd.c
 index c940887..3f11c51 100644
 --- a/src/main/cd.c
@@ -1199,6 +1290,825 @@ index 7df184b..8a58d75 100644
      Cd_GetFilePos(arg0, sp10);
      r = Cd_GetFileSectors(arg0);
      Cd_ReadState.sectorsLeft = r;
+diff --git a/src/main/digidex.c b/src/main/digidex.c
+new file mode 100644
+index 0000000..e2687e9
+--- /dev/null
++++ b/src/main/digidex.c
+@@ -0,0 +1,684 @@
++/* Digidex (Forbs Hidden Mods, native only; include/main/digidex.h).
++ *
++ * Opened from the top menu's Digidex entry (task 0x17, topmenu.c). A list of every Digimon in the
++ * base data table (0xC6C, id order) on the left; on the right the selected one's model, turning,
++ * and what it is: name, level and type, its technique, what it digivolves from and, by DP, into.
++ * Unmet Digimon are a black silhouette named "?????"; seen ones (fought against) show name and
++ * model; owned ones (fought with it in the party, or digivolved into it in battle) show their
++ * technique too. Every save starts empty. Up / down move,
++ * left / right a page, Triangle or Circle closes. Windows are the top menu's box sprite (0x457
++ * cells 1 and 2) drawn in slices to any size. */
++#ifdef DW2_NATIVE
++
++#include "common.h"
++#include "main/game.h"
++#include "main/task.h"
++#include "main/digibase.h"
++#include "main/skill.h"
++#include "main/digidex.h"
++#include "main/topmenu.h"
++
++extern GfxTexSlot *Gfx_FindOrLoadTexSlot(s32 id);
++extern s32 GsSetRefView2(GsRVIEW2 *);
++
++/* ---------------------------------------------------------------- what the tamer has met */
++
++static u8 *Dex_SeenBits(void) {
++    return Save_GameState._padFD4; /* 32 bytes: ids 0..255 */
++}
++
++static u8 *Dex_OwnedByte(s32 digiId) {
++    return digiId < 128 ? &Save_GameState._padFD4[32 + (digiId >> 3)] : &Save_GameState._pad1048[(digiId - 128) >> 3];
++}
++
++s32 Dex_Level(s32 digiId) {
++    if (digiId <= 0 || digiId > 255) {
++        return 0;
++    }
++    if (*Dex_OwnedByte(digiId) & (1 << (digiId & 7))) {
++        return 2;
++    }
++    return (Dex_SeenBits()[digiId >> 3] >> (digiId & 7)) & 1;
++}
++
++void Dex_MarkSeen(s32 digiId) {
++    if (digiId > 0 && digiId <= 255) {
++        Dex_SeenBits()[digiId >> 3] |= 1 << (digiId & 7);
++    }
++}
++
++void Dex_MarkOwned(s32 digiId) {
++    if (digiId > 0 && digiId <= 255) {
++        Dex_MarkSeen(digiId);
++        *Dex_OwnedByte(digiId) |= 1 << (digiId & 7);
++    }
++}
++
++/* what the screen shows: the F2 "show all" box shows every Digimon as owned */
++static s32 Dex_Shown(s32 digiId) {
++    return Host_DexShowAll() ? 2 : Dex_Level(digiId);
++}
++
++/* ---------------------------------------------------------------- boxes from the menu sprite */
++
++/* The top menu's box (0x457 cell 1) and its shadow (cell 2, 2 px right and down): 128 x 47, five
++ * columns of cells (16 | 32 | 32 | 32 | 16; the middle three are the same texture). Drawn any size:
++ * the left and right columns as they are, the middle one repeated; rows 0..14 at the top, rows
++ * 15..22 (one band of the interior's lines) repeated, rows 31..46 at the bottom. */
++#define DEX_BOX_W 128
++#define DEX_BOX_H 47
++#define DEX_TOP 15
++#define DEX_BAND 8
++#define DEX_BOTTOM 16
++
++static void Dex_Quad(GfxPartOTag *ot, GfxPartCell *e, GfxPartTexSlot *t, s32 x, s32 y, s32 w, s32 h, s32 u, s32 v,
++                     s32 uw, s32 vh) {
++    GfxPartPolyFT4 *p = (GfxPartPolyFT4 *)Sys_State.packet.addr;
++    s32 sx = Sys_State.centerX.s == 0x140;
++    s32 sy = Sys_State.centerY.s == 0xF0;
++    s32 i;
++
++    if (w <= 0 || h <= 0) {
++        return;
++    }
++    p->c.r = p->c.g = p->c.b = 0x80;
++    p->tag.len = 9;
++    if (e->blend & 0x80) {
++        p->c.code = 0x2E;
++        p->v[1].extra = t->tpage | ((e->blend & 3) << 5);
++    } else {
++        p->c.code = 0x2C;
++        p->v[1].extra = t->tpage;
++    }
++    for (i = 0; i < 4; i++) {
++        p->v[i].x = (u16)((x + ((i & 1) ? w : 0)) << sx);
++        p->v[i].y = (u16)((y + ((i & 2) ? h : 0)) << sy);
++        p->v[i].u = (u8)(u + ((i & 1) ? uw : 0));
++        p->v[i].v = (u8)(v + ((i & 2) ? vh : 0));
++    }
++    if (p->v[1].u == 0) {
++        p->v[1].u = p->v[3].u = 0xFF;
++    }
++    p->v[0].extra = ((e->clutY + t->clutY + e->clutRow) << 6) | (((e->clutX + t->clutX) >> 4) & 0x3F);
++    p->tag.addr = ot->addr;
++    ot->addr = (u32)(uptr)p;
++    Sys_State.packet.addr = (sptr)(p + 1);
++}
++
++/* One column of the box sprite (cell e: its u, its width) at screen x, rows sliced to height h. */
++static void Dex_BoxColumn(GfxPartOTag *ot, GfxPartCell *e, GfxPartTexSlot *t, s32 x, s32 y, s32 w, s32 h) {
++    s32 u = e->u + t->u;
++    s32 r;
++    s32 n;
++
++    Dex_Quad(ot, e, t, x, y, w, DEX_TOP, u, e->v, w, DEX_TOP);
++    for (r = DEX_TOP; r < h - DEX_BOTTOM; r += n) {
++        n = h - DEX_BOTTOM - r < DEX_BAND ? h - DEX_BOTTOM - r : DEX_BAND;
++        Dex_Quad(ot, e, t, x, y + r, w, n, u, e->v + DEX_TOP, w, n);
++    }
++    Dex_Quad(ot, e, t, x, y + h - DEX_BOTTOM, w, DEX_BOTTOM, u, e->v + DEX_BOX_H - DEX_BOTTOM, w, DEX_BOTTOM);
++}
++
++static void Dex_BoxCell(GfxPartOTag *ot, s32 fileId, s32 x, s32 y, s32 w, s32 h) {
++    GfxPartCell *e = (GfxPartCell *)Cd_GetFileEntry(fileId);
++    GfxPartTexSlot *t = (GfxPartTexSlot *)Gfx_FindOrLoadTexSlot(fileId & 0xFFFF0000);
++    GfxPartCell *left = NULL;
++    GfxPartCell *mid = NULL;
++    GfxPartCell *right = NULL;
++    s32 c;
++    s32 n;
++
++    for (; e->u != 0xFF; e++) {
++        if (e->frame != 0) {
++            continue;
++        }
++        if ((s16)e->x == -DEX_BOX_W / 2) {
++            left = e;
++        } else if ((s16)e->x + e->w == DEX_BOX_W / 2) {
++            right = e;
++        } else if (mid == NULL) {
++            mid = e;
++        }
++    }
++    if (left == NULL || mid == NULL || right == NULL) {
++        return;
++    }
++    Dex_BoxColumn(ot, left, t, x, y, left->w, h);
++    for (c = left->w; c < w - right->w; c += n) {
++        n = w - right->w - c < mid->w ? w - right->w - c : mid->w;
++        Dex_BoxColumn(ot, mid, t, x + c, y, n, h);
++    }
++    Dex_BoxColumn(ot, right, t, x + w - right->w, y, right->w, h);
++}
++
++/* A menu box at screen x, y (0..319, 0..239), w x h, in ordering table layer `layer` (0 is the
++ * menus' own; the Digidex puts its windows lower, under its model). */
++void Dex_DrawBoxLayer(s32 x, s32 y, s32 w, s32 h, s32 layer) {
++    GfxPartOTag *ot = (GfxPartOTag *)Sys_State.otLayers.addr[layer];
++
++    x -= 160;
++    y -= 120;
++    Dex_BoxCell(ot, 0x04570001, x, y, w, h);     /* the box (inserted first: drawn after its shadow) */
++    Dex_BoxCell(ot, 0x04570002, x + 2, y + 2, w, h); /* its shadow */
++}
++
++void Dex_DrawBox(s32 x, s32 y, s32 w, s32 h) {
++    Dex_DrawBoxLayer(x, y, w, h, 0);
++}
++
++/* ---------------------------------------------------------------- text */
++
++#define G_SPACE 0xFD
++#define G_END 0xFF
++
++static u8 Dex_Glyph(char c) {
++    if (c >= '0' && c <= '9') {
++        return (u8)(c - '0');
++    }
++    if (c >= 'A' && c <= 'Z') {
++        return (u8)(c - 'A' + 10);
++    }
++    if (c >= 'a' && c <= 'z') {
++        return (u8)(c - 'a' + 0x24);
++    }
++    switch (c) {
++    case '&': return 0x42;
++    case '?': return 0x44;
++    case '!': return 0x45;
++    case '/': return 0x46;
++    case '-': return 0x49;
++    case ',': return 0x54;
++    case '.': return 0x55;
++    case '\'': return 0x56;
++    case ':': return 0x59;
++    case '+': return 0x5B;
++    default: return G_SPACE;
++    }
++}
++
++/* Builds game text: Dex_Cat(buf, &n, ...) appends ASCII, Dex_CatGame game text (0xFF ended). */
++static void Dex_Cat(u8 *buf, s32 *n, s32 max, const char *s) {
++    while (*s != 0 && *n < max - 1) {
++        buf[(*n)++] = Dex_Glyph(*s++);
++    }
++    buf[*n] = G_END;
++}
++
++static void Dex_CatGame(u8 *buf, s32 *n, s32 max, const u8 *s) {
++    while (s != NULL && *s != G_END && *n < max - 1) {
++        if (*s >= 0xF0 && *s != G_SPACE) { /* escapes (builtin strings) take two bytes */
++            if (*n >= max - 2) {
++                break;
++            }
++            buf[(*n)++] = *s++;
++        }
++        buf[(*n)++] = *s++;
++    }
++    buf[*n] = G_END;
++}
++
++static void Dex_CatNum(u8 *buf, s32 *n, s32 max, s32 v, s32 width) {
++    char t[12];
++    s32 i = 0;
++    s32 k;
++
++    do {
++        t[i++] = (char)('0' + v % 10);
++        v /= 10;
++    } while (v != 0 && i < 10);
++    for (k = i; k < width; k++) {
++        Dex_Cat(buf, n, max, "0");
++    }
++    while (i > 0) {
++        char c[2] = { t[--i], 0 };
++        Dex_Cat(buf, n, max, c);
++    }
++}
++
++static void Dex_Text(s32 *slot, u8 *text, s32 x, s32 y, s32 color) {
++    TextOpenArgs a;
++
++    Mem_Zero(&a, sizeof(a));
++    a.text = (s32)(sptr)text;
++    a.bigFont = 0;
++    a.color = color;
++    a.x = (s16)x;
++    a.y = (s16)y;
++    a.charDelay = 0;
++    Text_Open(slot, &a);
++}
++
++/* ---------------------------------------------------------------- the screen */
++
++#define DEX_ROWS 17
++#define DEX_LIST_X 8
++#define DEX_LIST_Y 24
++#define DEX_ROW_H 11
++#define DEX_INFO_LINES 9
++#define DEX_NAME_MAX 24
++#define DEX_LINE_MAX 40
++#define DEX_MAX 256
++#define DEX_MODEL_H 84  /* rows from the feet to the top of the head */
++#define DEX_MODEL_CY 48 /* screen row the model is centred on (its feet project a little below row 0) */
++#define DEX_BOX_LAYER 5
++#define DEX_MODEL_Z -0x1E00
++
++typedef struct {
++    s32 listText[DEX_ROWS];
++    s32 infoText[DEX_INFO_LINES];
++    s32 titleText;
++    s32 count;          /* Digimon in the table */
++    s32 top;            /* first row shown */
++    s32 sel;            /* selected index */
++    s32 shownSel;       /* the info shows this one (-1: nothing yet) */
++    s32 shownAll;       /* Host_DexShowAll when the texts were made */
++    s32 ramp;
++    s32 modelId;        /* digiId whose model is attached (0 none) */
++    s32 modelFile;
++    s32 silhouette;
++    s32 fitScale;       /* the model's scale and screen offset, fitted to the window (0: not yet) */
++    s32 fitY;
++    s16 rot[4];
++    s32 dirty;
++} DexWork;
++
++static u8 Dex_Ids[DEX_MAX];
++static u8 Dex_ListBuf[DEX_ROWS][DEX_LINE_MAX];
++static u8 Dex_InfoBuf[DEX_INFO_LINES][DEX_LINE_MAX];
++static u8 Dex_TitleBuf[DEX_LINE_MAX];
++static const u8 Dex_Unknown[] = { 0x44, 0x44, 0x44, 0x44, 0x44, G_END }; /* "?????" */
++
++void Menu_DigidexInit(Actor *a, s32 arg);
++void Menu_DigidexTask(Actor *a);
++void Menu_DigidexDraw(Actor *a);
++void Menu_DigidexDestroy(Actor *a);
++TaskDesc Menu_DigidexDesc = {
++    (TaskInitFn)Menu_DigidexInit, Menu_DigidexTask, Menu_DigidexDestroy, Menu_DigidexDraw, sizeof(DexWork), 4,
++};
++
++static const u8 *Dex_NameOf(s32 id) {
++    return Dex_Shown(id) != 0 ? Digi_GetDefaultName(id) : Dex_Unknown;
++}
++
++static void Dex_ListTexts(DexWork *w) {
++    s32 r;
++
++    for (r = 0; r < DEX_ROWS; r++) {
++        s32 i = w->top + r;
++        s32 n = 0;
++        u8 *b = Dex_ListBuf[r];
++
++        if (i >= w->count) {
++            Text_Close(&w->listText[r]);
++            continue;
++        }
++        Dex_CatNum(b, &n, DEX_LINE_MAX, i + 1, 3);
++        Dex_Cat(b, &n, DEX_LINE_MAX, " ");
++        Dex_CatGame(b, &n, DEX_LINE_MAX, Dex_NameOf(Dex_Ids[i]));
++        Dex_Text(&w->listText[r], b, DEX_LIST_X + 10, DEX_LIST_Y + 6 + r * DEX_ROW_H, Dex_Shown(Dex_Ids[i]) == 0);
++    }
++}
++
++static const char *const Dex_LevelNames[] = { "Rookie", "Champion", "Ultimate", "Mega" };
++
++static void Dex_InfoTexts(DexWork *w) {
++    s32 id = Dex_Ids[w->sel];
++    s32 lv = Dex_Shown(id);
++    DigiBaseData *b = Digi_FindBaseData(id);
++    s32 line = 0;
++    s32 i;
++    s32 k;
++    s32 n;
++    u8 *t;
++
++#define LINE() (t = Dex_InfoBuf[line], n = 0)
++#define PUT(color) (Dex_Text(&w->infoText[line], Dex_InfoBuf[line], 146, 136 + line * DEX_ROW_H, (color)), line++)
++    /* name and number */
++    LINE();
++    Dex_CatNum(t, &n, DEX_LINE_MAX, w->sel + 1, 3);
++    Dex_Cat(t, &n, DEX_LINE_MAX, " ");
++    Dex_CatGame(t, &n, DEX_LINE_MAX, Dex_NameOf(id));
++    PUT(0);
++    /* level and type */
++    LINE();
++    k = Digi_GetRank(id);
++    Dex_Cat(t, &n, DEX_LINE_MAX, k >= 0 && k < 4 ? Dex_LevelNames[k] : "?");
++    if (lv != 0) {
++        Dex_Cat(t, &n, DEX_LINE_MAX, "  ");
++        Dex_CatGame(t, &n, DEX_LINE_MAX, (u8 *)Cd_GetFileEntry(Digi_GetType(id) + 0x1FD00C3));
++    }
++    PUT(lv == 0);
++    /* technique: owned only */
++    LINE();
++    Dex_Cat(t, &n, DEX_LINE_MAX, "Tech: ");
++    k = Digi_GetLearnedSkill(id);
++    if (lv == 2 && k != 0) {
++        Dex_CatGame(t, &n, DEX_LINE_MAX, (u8 *)(sptr)Skill_GetNameText(k));
++    } else {
++        Dex_CatGame(t, &n, DEX_LINE_MAX, lv == 2 ? (const u8 *)"\xFF" : Dex_Unknown);
++    }
++    PUT(lv != 2);
++    /* from: every Digimon whose table names this one */
++    LINE();
++    Dex_Cat(t, &n, DEX_LINE_MAX, "From: ");
++    k = 0;
++    for (i = 0; i < w->count && k < 2; i++) {
++        DigiBaseData *p = Digi_FindBaseData(Dex_Ids[i]);
++        s32 j;
++
++        for (j = 0; j < 4; j++) {
++            if (p->rangeValues[j] == id) {
++                if (k++ != 0) {
++                    Dex_Cat(t, &n, DEX_LINE_MAX, ", ");
++                }
++                Dex_CatGame(t, &n, DEX_LINE_MAX, Dex_NameOf(Dex_Ids[i]));
++                break;
++            }
++        }
++    }
++    if (k == 0) {
++        Dex_Cat(t, &n, DEX_LINE_MAX, "-");
++    }
++    PUT(0);
++    /* into, by DP (Digi_GetEvolutionTarget's ranges) */
++    LINE();
++    Dex_Cat(t, &n, DEX_LINE_MAX, "Digivolves into:");
++    PUT(0);
++    k = 0;
++    if (b != NULL && b->rangeValues[0] != 0) {
++        for (i = 0; i < 4 && b->rangeValues[i] != 0 && line < DEX_INFO_LINES; i++) {
++            s32 hi = i < 4 && b->rangeBounds[i + 1] != 0 ? b->rangeBounds[i + 1] - 1 : -1;
++
++            LINE();
++            Dex_Cat(t, &n, DEX_LINE_MAX, " DP ");
++            Dex_CatNum(t, &n, DEX_LINE_MAX, b->rangeBounds[i], 1);
++            if (hi < 0) {
++                Dex_Cat(t, &n, DEX_LINE_MAX, "+");
++            } else if (hi != b->rangeBounds[i]) {
++                Dex_Cat(t, &n, DEX_LINE_MAX, "-");
++                Dex_CatNum(t, &n, DEX_LINE_MAX, hi, 1);
++            }
++            Dex_Cat(t, &n, DEX_LINE_MAX, "  ");
++            Dex_CatGame(t, &n, DEX_LINE_MAX, Dex_NameOf(b->rangeValues[i]));
++            PUT(Dex_Shown(b->rangeValues[i]) == 0);
++            k++;
++        }
++    }
++    if (k == 0) {
++        LINE();
++        Dex_Cat(t, &n, DEX_LINE_MAX, " -");
++        PUT(0);
++    }
++    while (line < DEX_INFO_LINES) {
++        Text_Close(&w->infoText[line++]);
++    }
++#undef LINE
++#undef PUT
++}
++
++static void Dex_TitleText(DexWork *w) {
++    s32 seen = 0;
++    s32 owned = 0;
++    s32 i;
++    s32 n = 0;
++
++    for (i = 0; i < w->count; i++) {
++        s32 lv = Dex_Shown(Dex_Ids[i]);
++
++        seen += lv != 0;
++        owned += lv == 2;
++    }
++    Dex_Cat(Dex_TitleBuf, &n, DEX_LINE_MAX, "DIGIDEX   Seen ");
++    Dex_CatNum(Dex_TitleBuf, &n, DEX_LINE_MAX, seen, 1);
++    Dex_Cat(Dex_TitleBuf, &n, DEX_LINE_MAX, "  Owned ");
++    Dex_CatNum(Dex_TitleBuf, &n, DEX_LINE_MAX, owned, 1);
++    Dex_Cat(Dex_TitleBuf, &n, DEX_LINE_MAX, "  of ");
++    Dex_CatNum(Dex_TitleBuf, &n, DEX_LINE_MAX, w->count, 1);
++    Dex_Text(&w->titleText, Dex_TitleBuf, 14, 8, 0);
++}
++
++static void Dex_FreeModel(Actor *a) {
++    ActorModel *m = a->model;
++
++    if (m != NULL) {
++        if (m->screenXY != NULL) {
++            Mem_Free((ActorWork *)m->screenXY);
++        }
++        if (m->vertOtz != NULL) {
++            Mem_Free((ActorWork *)m->vertOtz);
++        }
++        if (m->vertColors != NULL) {
++            Mem_Free((ActorWork *)m->vertColors);
++        }
++        if (m->bones != NULL) {
++            Mem_Free((ActorWork *)m->bones);
++        }
++        Mem_Free((ActorWork *)m);
++        a->model = NULL;
++    }
++}
++
++static void Dex_SetModel(Actor *a, DexWork *w, s32 id) {
++    s32 file = Digi_GetModelFile(id);
++
++    if (id == w->modelId) {
++        return;
++    }
++    Dex_FreeModel(a);
++    w->modelId = 0;
++    if (file <= 0) {
++        return;
++    }
++    Cd_GetFileSync(file);
++    Cd_GetFileSync(Digi_GetAnimFile(id, 0));
++    a->digiId = id;
++    Gfx_AttachModel(a, file)->otIndex = 3;
++    Anim_SetModelAnim(a, 0);
++    w->modelId = id;
++    w->modelFile = file;
++    w->fitScale = 0;
++}
++
++void Menu_DigidexInit(Actor *a, s32 arg) {
++    DexWork *w = (DexWork *)a->work;
++    s32 pos[3] = { 0, 0, 0 };
++    s32 n = 0;
++    s32 id;
++    Blk16 *b;
++    s32 *q;
++    s32 i;
++
++    (void)arg;
++    Mem_Zero(w, sizeof(*w));
++    Mem_FillWordsNeg1(w->listText, DEX_ROWS);
++    Mem_FillWordsNeg1(w->infoText, DEX_INFO_LINES);
++    w->titleText = -1;
++    for (id = 1; id < DEX_MAX && n < DEX_MAX; id++) {
++        DigiBaseData *d = Digi_FindBaseData(id);
++
++        if (d != NULL && d->id == id && Digi_GetModelFile(id) > 0) {
++            Dex_Ids[n++] = (u8)id;
++        }
++    }
++    w->count = n;
++    w->shownSel = -1;
++    w->rot[0] = -0xE3;
++    Actor_InitTransform((ContC40 *)a, pos, 0);
++    b = (Blk16 *)Cd_GetFileEntry(0x513001F); /* the status screen's lights */
++    q = (s32 *)Cd_GetFileEntry(0x5130020);
++    for (i = 0; i < 3; i++) {
++        GsSetFlatLight(i, (GsF_LIGHT *)&b[i]);
++    }
++    GsSetAmbient(q[0], q[1], q[2]);
++    GsSetLightMode(0);
++}
++
++void Menu_DigidexDestroy(Actor *a) {
++    Dex_FreeModel(a);
++    Task_DefaultDestroy(a);
++}
++
++void Menu_DigidexTask(Actor *a) {
++    DexWork *w = (DexWork *)a->work;
++    s32 old;
++    u16 rep;
++
++    switch (a->stateLevel0) {
++    case 0:
++    default:
++        if (Math_RampToOne(0, &w->ramp) == 0) {
++            w->dirty = 1;
++            Task_NextState0(a);
++        }
++        break;
++    case 1:
++        old = w->sel;
++        rep = Pad_State[0].repeat;
++        if (rep & 0x1000) {
++            w->sel = w->sel > 0 ? w->sel - 1 : w->count - 1;
++        } else if (rep & 0x4000) {
++            w->sel = w->sel < w->count - 1 ? w->sel + 1 : 0;
++        } else if (rep & 0x8000) {
++            w->sel = w->sel - DEX_ROWS < 0 ? 0 : w->sel - DEX_ROWS;
++        } else if (rep & 0x2000) {
++            w->sel = w->sel + DEX_ROWS >= w->count ? w->count - 1 : w->sel + DEX_ROWS;
++        }
++        if (w->sel != old) {
++            Snd_PlayById(0xC, 0);
++        }
++        if (w->sel < w->top) {
++            w->top = w->sel;
++            w->dirty = 1;
++        } else if (w->sel >= w->top + DEX_ROWS) {
++            w->top = w->sel - DEX_ROWS + 1;
++            w->dirty = 1;
++        }
++        if (w->shownAll != Host_DexShowAll()) {
++            w->dirty = 1;
++        }
++        if (w->dirty) {
++            w->dirty = 0;
++            w->shownAll = Host_DexShowAll();
++            Dex_ListTexts(w);
++            Dex_TitleText(w);
++            w->shownSel = -1;
++        }
++        if (w->shownSel != w->sel) {
++            w->shownSel = w->sel;
++            Dex_InfoTexts(w);
++            Dex_SetModel(a, w, Dex_Ids[w->sel]);
++            w->rot[1] = 0;
++        }
++        w->silhouette = Dex_Shown(Dex_Ids[w->sel]) == 0;
++        w->rot[1] = (s16)((w->rot[1] + 11) & 0xFFF);
++        if (Pad_State[0].triangle > 0 || Pad_State[0].circle > 0) {
++            Snd_PlayById(0xB, 0);
++            Text_CloseArray(w->listText, DEX_ROWS);
++            Text_CloseArray(w->infoText, DEX_INFO_LINES);
++            Text_Close(&w->titleText);
++            Task_NextState0(a);
++        }
++        break;
++    case 2:
++        if (Math_RampToZero(0, &w->ramp) == 0) {
++            GsSetOffset(0, 0);
++            Task_SetState0(a, 3);
++        }
++        break;
++    }
++}
++
++void Menu_DigidexDraw(Actor *a) {
++    DexWork *w = (DexWork *)a->work;
++    static GsCOORDINATE2 coord;
++    GsRVIEW2 v;
++    AllocC40 *x;
++
++    if (w->ramp == 0) {
++        return;
++    }
++    /* the windows: the list, the model, the info */
++    Dex_DrawBoxLayer(4, 18, 132, 214, DEX_BOX_LAYER);
++    Dex_DrawBoxLayer(140, 18, 176, 104, DEX_BOX_LAYER);
++    Dex_DrawBoxLayer(140, 126, 176, 106, DEX_BOX_LAYER);
++    /* the selection: a bar of the menu cursor's colour under the row */
++    if (a->stateLevel0 == 1) {
++        s32 r = w->sel - w->top;
++        GfxPart *cur = (GfxPart *)Cd_GetFileEntry(0x459000A);
++
++        for (; cur->fileId != 0; cur++) {
++            if (cur->fileId == 0x04570003) {
++                GfxPart c = *cur;
++                GfxPart end[2];
++
++                c.x = (s16)(DEX_LIST_X - 160);
++                c.y = (s16)(DEX_LIST_Y + 4 + r * DEX_ROW_H - 120);
++                c.visible = 1;
++                c.palette = (u8)((a->elapsed >> 2) & 3);
++                end[0] = c;
++                Mem_Zero(&end[1], sizeof(end[1]));
++                Gfx_SetPartsScale((void *)end, 0x1000, 0x1000);
++                Gfx_DrawParts((s32)(sptr)end);
++                break;
++            }
++        }
++    }
++    if (w->modelId == 0 || a->stateLevel0 != 1) {
++        return;
++    }
++    /* the model, turning, in the right window */
++    GsSetOffset(68, w->fitScale != 0 ? w->fitY : 0);
++    RotMatrixYXZ((SVECTOR *)w->rot, &coord.coord);
++    coord.coord.t[0] = coord.coord.t[1] = coord.coord.t[2] = 0;
++    coord.flg = 0;
++    coord.super = NULL;
++    coord.sub = NULL;
++    Mem_Zero(&v, sizeof(v));
++    v.vpy = -0x180;
++    v.vpz = DEX_MODEL_Z;
++    v.super = &coord;
++    GsSetProjection(0x230);
++    GsSetRefView2(&v);
++    /* unmet: a silhouette, every vertex the flat colour black (Gfx_CalcNormalColors uses the
++     * model's flat colour when its clutRow is not 0; 1 would pick the other palette) */
++    a->model->clutRow = w->silhouette ? 2 : 0;
++    a->model->_pad38[0] = a->model->_pad38[1] = a->model->_pad38[2] = 0;
++    x = (AllocC40 *)a->u38.ptr38;
++    x->scaleX = x->scaleY = x->scaleZ = w->fitScale != 0 ? w->fitScale : 0x1000;
++    Anim_StepModelAnim(a);
++    Actor_UpdateTransform(a);
++    Gfx_CalcModelBoneMatrices(a);
++    if (w->fitScale == 0) {
++        /* first frame of a model: fit it, from where its bones project at scale 1 (the mesh
++         * reaches a little past the joints), to DEX_MODEL_H rows centred in the window */
++        ModelBone *e = a->model->bones;
++        s32 lo = 0x7FFF;
++        s32 hi = -0x7FFF;
++        s32 y;
++        s32 k;
++
++        for (k = 0; k < a->model->boneCount; k++, e++) {
++            MATRIX *m = (MATRIX *)&e->viewMat;
++
++            if (m->t[2] > 0) {
++                y = m->t[1] * 0x230 / m->t[2];
++                lo = y < lo ? y : lo;
++                hi = y > hi ? y : hi;
++            }
++        }
++        /* the model stands on its origin, which projects to row 0; its head reaches a little
++         * past the highest joint */
++        lo = lo * 115 / 100;
++        if (lo > -8) {
++            lo = -8;
++        }
++        y = 0x1000 * DEX_MODEL_H / -lo;
++        w->fitScale = y < 0x400 ? 0x400 : y > 0x2400 ? 0x2400 : y;
++        w->fitY = DEX_MODEL_CY - 120 - lo * w->fitScale / 0x1000 / 2;
++        __builtin_printf("[dex] fit %d: joints %d..%d (%d bones) -> scale %X, y %d\n", w->modelId, lo, hi, a->model->boneCount, w->fitScale, w->fitY);
++        return;
++    }
++    Gfx_DrawTexModel(a, 0);
++}
++
++#endif /* DW2_NATIVE */
+diff --git a/src/main/topmenu.c b/src/main/topmenu.c
+index 23af953..7b48ce3 100644
+--- a/src/main/topmenu.c
++++ b/src/main/topmenu.c
+@@ -9,6 +9,18 @@
+ /* Declarations the original file made before this code. */
+ extern void Task_Create(u32, s32 *, s32);
+ 
++#ifdef DW2_NATIVE
++#include "main/digidex.h"
++/* Forbs Hidden Mods: a fourth row with the Digidex (src/main/digidex.c) under Status / Items /
++ * Digimon. The grid becomes 2 x 4 (the right cell of the new row is skipped), the box is drawn
++ * DEX_MENU_GROW rows taller, and choosing it opens task 0x17. */
++#define DEX_MENU_ROW 3
++#define DEX_MENU_SEL 0x7F
++#define DEX_MENU_GROW 11
++static s32 Menu_DexText = -1;
++static u8 Menu_DexLabel[] = { 0x0D, 0x2C, 0x2A, 0x2C, 0x27, 0x28, 0x3B, 0xFF }; /* "Digidex" */
++#endif
++
+ /* Small data this unit defines: initialised ones go to .sdata, the rest to .sbss in
+  * game.h's order. Retail reaches them with %gp_rel here. */
+ s32 Menu_TopMenuResult;
+@@ -282,6 +294,10 @@ void Menu_TopMenuTask(Actor *a0) {
+         Menu_Ctx->topMenuResult = 0;
+         Menu_TopMenuResult = 0;
+         *(MenuGridLayout *)w->gridSize = *(MenuGridLayout *)Cd_GetFileEntry(0x5130005);
++#ifdef DW2_NATIVE
++        w->gridSize[1] = DEX_MENU_ROW + 1;
++        Menu_DexText = -1;
++#endif
+         Menu_Ctx->flags = 0;
+         v = Sys_State.gameMode;
+         if (v / 256 != 2) {
+@@ -319,6 +335,15 @@ void Menu_TopMenuTask(Actor *a0) {
+                 break;
+             }
+             Text_PrintIdList(&w->option0Text, (TextIdListEntry *)Cd_GetFileEntry(0x5130003), 2);
++#ifdef DW2_NATIVE
++            {
++                Halves h;
++
++                h.lo = 27;
++                h.hi = 24 + DEX_MENU_ROW * 11;
++                Text_OpenPacked(&Menu_DexText, (s32)(sptr)Menu_DexLabel, 2, h);
++            }
++#endif
+             Text_Close((Menu_Ctx->flags & 1) ? &w->option5Text : &w->option6Text);
+             Text_SetColor(w->option1Text, (Menu_Ctx->flags >> 4) & 1);
+             Text_SetColor(w->option2Text, (Menu_Ctx->flags >> 4) & 1);
+@@ -331,8 +356,23 @@ void Menu_TopMenuTask(Actor *a0) {
+         case 1:
+             if (Menu_MoveGridCursorP1((s32)w->cursor, (s32)w->gridSize) != 0) {
+                 snd = 0xC;
++#ifdef DW2_NATIVE
++                if (w->cursor[1] == DEX_MENU_ROW) {
++                    w->cursor[0] = 0; /* the Digidex row has one cell */
++                }
++#endif
+             } else if (Pad_State[0].cross > 0) {
++#ifdef DW2_NATIVE
++                if (w->cursor[1] == DEX_MENU_ROW) {
++                    w->selection = DEX_MENU_SEL;
++                    Task_NextState1(a0);
++                    Snd_PlayById(0xA, 0);
++                    break;
++                }
++                k = w->cursor[0] * DEX_MENU_ROW + w->cursor[1]; /* the retail 2 x 3 index */
++#else
+                 k = Menu_GridIndexColMajor(w->cursor, w->gridSize);
++#endif
+                 if (k == 5 && (Menu_Ctx->flags & 1)) {
+                     k = 6;
+                 }
+@@ -367,6 +407,9 @@ void Menu_TopMenuTask(Actor *a0) {
+             case 0:
+             default:
+                 Text_CloseArray(&w->option0Text, 8);
++#ifdef DW2_NATIVE
++                Text_Close(&Menu_DexText);
++#endif
+                 Task_NextState2(a0);
+                 break;
+             case 1:
+@@ -380,6 +423,11 @@ void Menu_TopMenuTask(Actor *a0) {
+             switch (a0->stateLevel2) {
+             case 0:
+             default:
++#ifdef DW2_NATIVE
++                if (w->selection == DEX_MENU_SEL) {
++                    Task_Create(0x17, slot, 1);
++                } else
++#endif
+                 Task_Create(tbl[w->selection].field_0, slot, tbl[w->selection].field_2);
+                 Task_NextState2(a0);
+                 break;
+@@ -401,6 +449,9 @@ void Menu_TopMenuTask(Actor *a0) {
+         case 0:
+         default:
+             Text_CloseArray(&w->option0Text, 8);
++#ifdef DW2_NATIVE
++            Text_Close(&Menu_DexText);
++#endif
+             Menu_TopMenuResult = Menu_Ctx->topMenuResult;
+             Task_NextState1(a0);
+             Gfx_FadeOutToBlack(0x20);
+@@ -441,6 +492,22 @@ void Menu_TopMenuDraw(Actor *actor) {
+                 default:
+                     Menu_SetPartsGridPos(obj, 2, &w->cursor, &w->gridSize);
+                     Gfx_SetPartsPalette(obj, 2, (actor->elapsed >> 2) & 3);
++#ifdef DW2_NATIVE
++                    {
++                        /* the box a row taller (open: before that the retail box opens) */
++                        GfxPart *q2;
++                        s32 grow = w->ramp == 0x1000;
++
++                        for (q2 = (GfxPart *)obj; q2->fileId != 0; q2++) {
++                            if (q2->fileId == 0x04570001 || q2->fileId == 0x04570002) {
++                                q2->visible = !grow;
++                            }
++                        }
++                        if (grow) {
++                            Dex_DrawBox(8, 17, 128, 47 + DEX_MENU_GROW);
++                        }
++                    }
++#endif
+                     break;
+                 case 1:
+                     Gfx_SetPartsNumber(obj, 2, 8, Save_GameStatePtr->bits);
 diff --git a/src/stag3000/battle.c b/src/stag3000/battle.c
 index e486a11..e7d3c14 100644
 --- a/src/stag3000/battle.c
@@ -1387,10 +2297,10 @@ index f23b69a..180d063 100644
          }
 diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
 new file mode 100644
-index 0000000..7b0354b
+index 0000000..b37ce31
 --- /dev/null
 +++ b/src/stag3000/evo_native.inc
-@@ -0,0 +1,753 @@
+@@ -0,0 +1,767 @@
 +/* Battle digivolution (Forbs Hidden Mods, native only; include/stag3000/evo_native.h).
 + * Included by battle.c under DW2_NATIVE.
 + *
@@ -1409,6 +2319,7 @@ index 0000000..7b0354b
 +#include <stdio.h>
 +
 +#include "stag3000/evo_native.h"
++#include "main/digidex.h"
 +
 +extern u8 Digi_GetEvolutionTarget(s32 id, s32 val);
 +extern void Mem_Free(ActorWork *arg0);
@@ -1554,6 +2465,18 @@ index 0000000..7b0354b
 +}
 +
 +static void Stg30_EvoBattleInit(void) {
++    s32 i;
++
++    /* Digidex: every enemy in this battle is seen, the Digimon fighting it owned */
++    for (i = 0; i < 6; i++) {
++        if (Stg30_Battle.digis[i].digiId != 0) {
++            if (i < 3) {
++                Dex_MarkOwned(Stg30_Battle.digis[i].digiId);
++            } else {
++                Dex_MarkSeen(Stg30_Battle.digis[i].digiId);
++            }
++        }
++    }
 +    Mem_Zero(Stg30_Evo, sizeof(Stg30_Evo));
 +    Stg30_EvoFxSlot = NULL;
 +    Stg30_EvoLift = Host_FpBattleEvo() ? EVO_BOX_GROW : 0;
@@ -1722,6 +2645,7 @@ index 0000000..7b0354b
 +    }
 +    e->revert = 0;
 +    Stg30_EvoHpSeen[slot] = d->hp;
++    Dex_MarkOwned(t); /* Digidex: digivolved into it */
 +    printf("[evo] slot %d digivolves: %d -> %d\n", slot, e->fromId, t);
 +}
 +

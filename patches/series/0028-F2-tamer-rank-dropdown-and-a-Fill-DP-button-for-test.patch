@@ -1,7 +1,7 @@
 From 0276e108e98362d2907e7d5f479fb86605b4a177 Mon Sep 17 00:00:00 2001
 From: Forb Hidden Gems <348521123+ForbHiddenGems@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 10:42:40 +0000
-Subject: [PATCH 28/28] F2: tamer rank dropdown and a Fill DP button for
+Subject: [PATCH 28/29] F2: tamer rank dropdown and a Fill DP button for
  testing
 
 Save tab, with Edit on: the tamer rank is picked by title (0 Cadet ..
