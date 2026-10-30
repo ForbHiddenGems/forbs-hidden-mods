@@ -135,6 +135,18 @@ Python 3. `dw2render.py` also needs `numpy` and `Pillow`.
 
 ## Licence
 
-PolyForm Noncommercial 1.0.0 licence applies.  
+The code in this repository (the patches' changes, `forbs.py`, `tools/` and `blender-addon/`) is
+licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE.md)**.
+
+In plain words (the licence text is what counts):
+
+- **You can** download it, build it, play with it, change it for yourself, and share it, for any
+  noncommercial purpose: personal use, hobby projects, study, research.
+- **You can't** sell it or use it for commercial purposes without permission from the author.
+- **If you pass it on** (changed or not), include the licence (or its link) and the
+  `Required Notice` line at the top of [LICENSE.md](LICENSE.md).
+
+The patches change the [DW2-PC](https://github.com/Wyrelade/DW2-PC) source code, which is public
+domain (CC0); the DW2-PC code itself stays under CC0, this licence covers only the work added here.
 
 Digimon and Digimon World 2 belong to their owners. This project includes none of their data.
