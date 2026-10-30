@@ -1,7 +1,7 @@
 From d266978be9ea76f9f41ee6a4a2ecf99567c643ef Mon Sep 17 00:00:00 2001
 From: Forb Hidden Gems <348521123+ForbHiddenGems@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 11:47:12 +0000
-Subject: [PATCH 29/29] Digidex: every Digimon, seen or owned, with its
+Subject: [PATCH 29/30] Digidex: every Digimon, seen or owned, with its
  digivolutions
 
 A Digidex row in the top menu (the box grows a row; the grid is 2 x 4 with

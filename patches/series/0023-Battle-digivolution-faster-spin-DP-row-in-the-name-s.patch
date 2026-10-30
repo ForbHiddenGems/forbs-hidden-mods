@@ -1,7 +1,7 @@
 From 2f08acb4e998dafec95e9968eb54a3487f197e8e Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Thu, 29 Oct 2026 12:25:18 +0000
-Subject: [PATCH 23/29] Battle digivolution: faster spin, DP row in the name
+Subject: [PATCH 23/30] Battle digivolution: faster spin, DP row in the name
  strip's grain
 
 The spin is 1.5 times as fast. The DP row's background is now the name

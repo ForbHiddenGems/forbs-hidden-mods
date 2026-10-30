@@ -1046,10 +1046,10 @@ index f0e5eaf..7706915 100644
  } // namespace
 diff --git a/include/main/digidex.h b/include/main/digidex.h
 new file mode 100644
-index 0000000..5d72ffa
+index 0000000..445e60b
 --- /dev/null
 +++ b/include/main/digidex.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,31 @@
 +#ifndef MAIN_DIGIDEX_H
 +#define MAIN_DIGIDEX_H
 +
@@ -1063,10 +1063,13 @@ index 0000000..5d72ffa
 +
 +#include "common.h"
 +
-+/* 0 unmet, 1 seen (fought against), 2 owned (fought with it, or digivolved into it in battle) */
++/* 0 unmet, 1 seen (fought against), 2 owned (in the party or bank, or digivolved into in battle) */
 +s32 Dex_Level(s32 digiId);
 +void Dex_MarkSeen(s32 digiId);
 +void Dex_MarkOwned(s32 digiId);
++/* every Digimon in the roster (party and bank) counts as owned: the top menu and the Digidex
++ * call this when they open */
++void Dex_ScanRoster(void);
 +/* a box of the top menu's sprite, any size, at screen x, y (0..319, 0..239) */
 +void Dex_DrawBox(s32 x, s32 y, s32 w, s32 h);
 +/* the same in ordering table layer `layer` (0: the menus' own) */
@@ -1292,18 +1295,18 @@ index 7df184b..8a58d75 100644
      Cd_ReadState.sectorsLeft = r;
 diff --git a/src/main/digidex.c b/src/main/digidex.c
 new file mode 100644
-index 0000000..e2687e9
+index 0000000..4be2267
 --- /dev/null
 +++ b/src/main/digidex.c
-@@ -0,0 +1,684 @@
+@@ -0,0 +1,695 @@
 +/* Digidex (Forbs Hidden Mods, native only; include/main/digidex.h).
 + *
 + * Opened from the top menu's Digidex entry (task 0x17, topmenu.c). A list of every Digimon in the
 + * base data table (0xC6C, id order) on the left; on the right the selected one's model, turning,
 + * and what it is: name, level and type, its technique, what it digivolves from and, by DP, into.
 + * Unmet Digimon are a black silhouette named "?????"; seen ones (fought against) show name and
-+ * model; owned ones (fought with it in the party, or digivolved into it in battle) show their
-+ * technique too. Every save starts empty. Up / down move,
++ * model; owned ones (in the party or bank whenever the menu opens, or digivolved into in
++ * battle) show their technique too. Up / down move,
 + * left / right a page, Triangle or Circle closes. Windows are the top menu's box sprite (0x457
 + * cells 1 and 2) drawn in slices to any size. */
 +#ifdef DW2_NATIVE
@@ -1349,6 +1352,16 @@ index 0000000..e2687e9
 +    if (digiId > 0 && digiId <= 255) {
 +        Dex_MarkSeen(digiId);
 +        *Dex_OwnedByte(digiId) |= 1 << (digiId & 7);
++    }
++}
++
++void Dex_ScanRoster(void) {
++    s32 i;
++
++    for (i = 0; i < 0x24; i++) {
++        if (Save_GameState.elems[i].state != 0) {
++            Dex_MarkOwned(Save_GameState.elems[i].digiId);
++        }
 +    }
 +}
 +
@@ -1809,6 +1822,7 @@ index 0000000..e2687e9
 +    }
 +    GsSetAmbient(q[0], q[1], q[2]);
 +    GsSetLightMode(0);
++    Dex_ScanRoster();
 +}
 +
 +void Menu_DigidexDestroy(Actor *a) {
@@ -1981,7 +1995,7 @@ index 0000000..e2687e9
 +
 +#endif /* DW2_NATIVE */
 diff --git a/src/main/topmenu.c b/src/main/topmenu.c
-index 23af953..7b48ce3 100644
+index 23af953..2df36c0 100644
 --- a/src/main/topmenu.c
 +++ b/src/main/topmenu.c
 @@ -9,6 +9,18 @@
@@ -2003,18 +2017,19 @@ index 23af953..7b48ce3 100644
  /* Small data this unit defines: initialised ones go to .sdata, the rest to .sbss in
   * game.h's order. Retail reaches them with %gp_rel here. */
  s32 Menu_TopMenuResult;
-@@ -282,6 +294,10 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -282,6 +294,11 @@ void Menu_TopMenuTask(Actor *a0) {
          Menu_Ctx->topMenuResult = 0;
          Menu_TopMenuResult = 0;
          *(MenuGridLayout *)w->gridSize = *(MenuGridLayout *)Cd_GetFileEntry(0x5130005);
 +#ifdef DW2_NATIVE
 +        w->gridSize[1] = DEX_MENU_ROW + 1;
 +        Menu_DexText = -1;
++        Dex_ScanRoster(); /* the Digidex: everything in the party and bank is owned */
 +#endif
          Menu_Ctx->flags = 0;
          v = Sys_State.gameMode;
          if (v / 256 != 2) {
-@@ -319,6 +335,15 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -319,6 +336,15 @@ void Menu_TopMenuTask(Actor *a0) {
                  break;
              }
              Text_PrintIdList(&w->option0Text, (TextIdListEntry *)Cd_GetFileEntry(0x5130003), 2);
@@ -2030,7 +2045,7 @@ index 23af953..7b48ce3 100644
              Text_Close((Menu_Ctx->flags & 1) ? &w->option5Text : &w->option6Text);
              Text_SetColor(w->option1Text, (Menu_Ctx->flags >> 4) & 1);
              Text_SetColor(w->option2Text, (Menu_Ctx->flags >> 4) & 1);
-@@ -331,8 +356,23 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -331,8 +357,23 @@ void Menu_TopMenuTask(Actor *a0) {
          case 1:
              if (Menu_MoveGridCursorP1((s32)w->cursor, (s32)w->gridSize) != 0) {
                  snd = 0xC;
@@ -2054,7 +2069,7 @@ index 23af953..7b48ce3 100644
                  if (k == 5 && (Menu_Ctx->flags & 1)) {
                      k = 6;
                  }
-@@ -367,6 +407,9 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -367,6 +408,9 @@ void Menu_TopMenuTask(Actor *a0) {
              case 0:
              default:
                  Text_CloseArray(&w->option0Text, 8);
@@ -2064,7 +2079,7 @@ index 23af953..7b48ce3 100644
                  Task_NextState2(a0);
                  break;
              case 1:
-@@ -380,6 +423,11 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -380,6 +424,11 @@ void Menu_TopMenuTask(Actor *a0) {
              switch (a0->stateLevel2) {
              case 0:
              default:
@@ -2076,7 +2091,7 @@ index 23af953..7b48ce3 100644
                  Task_Create(tbl[w->selection].field_0, slot, tbl[w->selection].field_2);
                  Task_NextState2(a0);
                  break;
-@@ -401,6 +449,9 @@ void Menu_TopMenuTask(Actor *a0) {
+@@ -401,6 +450,9 @@ void Menu_TopMenuTask(Actor *a0) {
          case 0:
          default:
              Text_CloseArray(&w->option0Text, 8);
@@ -2086,7 +2101,7 @@ index 23af953..7b48ce3 100644
              Menu_TopMenuResult = Menu_Ctx->topMenuResult;
              Task_NextState1(a0);
              Gfx_FadeOutToBlack(0x20);
-@@ -441,6 +492,22 @@ void Menu_TopMenuDraw(Actor *actor) {
+@@ -441,6 +493,22 @@ void Menu_TopMenuDraw(Actor *actor) {
                  default:
                      Menu_SetPartsGridPos(obj, 2, &w->cursor, &w->gridSize);
                      Gfx_SetPartsPalette(obj, 2, (actor->elapsed >> 2) & 3);

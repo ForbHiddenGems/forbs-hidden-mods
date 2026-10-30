@@ -1,7 +1,7 @@
 From ecf5664fd3a03b69fedddde3b265b0c4f6168606 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 21:22:38 +0000
-Subject: [PATCH 11/29] Mystery encounters: a ? holds one of the floor's rarer
+Subject: [PATCH 11/30] Mystery encounters: a ? holds one of the floor's rarer
  enemy groups
 
 When a floor is built, each party that will show as a ? is swapped for a set
