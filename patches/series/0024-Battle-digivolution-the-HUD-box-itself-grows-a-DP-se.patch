@@ -1,7 +1,7 @@
 From 9a07d40fc2048e7a34694b0c1b01e17c959da859 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Thu, 29 Oct 2026 12:45:27 +0000
-Subject: [PATCH 24/28] Battle digivolution: the HUD box itself grows a DP
+Subject: [PATCH 24/29] Battle digivolution: the HUD box itself grows a DP
  section
 
 The party HUD box is one sprite (013B entry 0x4A). It is now drawn in slices

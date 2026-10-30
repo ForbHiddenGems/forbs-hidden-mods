@@ -93,6 +93,10 @@ belong in patches.
   turns before changing back. Your tamer rank unlocks each step: Rookie to Champion at any rank,
   Champion to Ultimate from rank 5 (Pro), Ultimate to Mega from rank 8 (Commander). Your save is
   never changed.
+- **Digidex:** a new entry in the game's menu. Every Digimon, with its model turning, its level,
+  type and technique, what it digivolves from and what it becomes at which DP. Ones you haven't
+  met are black silhouettes named "?????"; fighting one shows it, owning it (or digivolving into
+  it in battle) shows its technique too. It's kept inside your save, and every save starts empty.
 - **Model mods:** the game reads replacement files from a `mods` folder next to `dw2.exe` (or in
   `%APPDATA%\DW2-Online\mods`, or the folder named in `mods-folder.txt` next to the exe), named by
   game file number (`005C.bin`). A label may follow the number after a space, `_` or `-`
@@ -100,7 +104,8 @@ belong in patches.
   above are new files, which is how new Digimon get their own model and animations.
 - The dev build's F2 overlay reads tables from `mods` too, so new Digimon and items show up there.
 - **Testing tools (dev build, F2 > Save, Edit on):** pick the tamer rank by title, and **Fill DP**
-  fills the DP gauge of every party Digimon that can digivolve, in battle.
+  fills the DP gauge of every party Digimon that can digivolve, in battle; **Digidex: show all** shows every
+  Digimon in the Digidex without changing your save.
 
 All changes sit under `#ifdef DW2_NATIVE`. The PS1 build is unchanged.
 
