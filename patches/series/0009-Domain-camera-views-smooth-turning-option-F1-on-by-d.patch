@@ -1,7 +1,7 @@
 From 0e5e6e972d5790c48bec74723ebee396525a51c9 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 20:52:30 +0000
-Subject: [PATCH 09/27] Domain camera views: smooth turning option (F1, on by
+Subject: [PATCH 09/28] Domain camera views: smooth turning option (F1, on by
  default)
 
 The camera yaw and the beetle's drawn rotation ease round when turning in the

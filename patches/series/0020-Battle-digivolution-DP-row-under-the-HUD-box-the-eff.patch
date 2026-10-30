@@ -1,7 +1,7 @@
 From e712dbfbc6c287d5b8cc42733b801d02aa2dee8f Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Thu, 29 Oct 2026 12:03:33 +0000
-Subject: [PATCH 20/27] Battle digivolution: DP row under the HUD box, the
+Subject: [PATCH 20/28] Battle digivolution: DP row under the HUD box, the
  effect actually plays
 
 The energy bar is now a DP row in the HUD's own style: the party boxes are

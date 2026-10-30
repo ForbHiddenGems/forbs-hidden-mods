@@ -186,6 +186,121 @@ index f972436..d60c201 100644
      f->data = (uint8_t *)Host_PakReadFile(id, &f->size);
      if (f->data == NULL || f->size < 16) {
          printf("[devdata] file 0x%03X: cannot read from the pack\n", id);
+diff --git a/host/devedit.c b/host/devedit.c
+index 0dbe782..428efcb 100644
+--- a/host/devedit.c
++++ b/host/devedit.c
+@@ -12,6 +12,7 @@
+ #include "host/devedit.h"
+ #include "host/host.h"
+ #include "main/156C.h"
++#include "stag3000/evo_native.h"
+ 
+ /* PD.4 dev state edit (host/devedit.h). Edits come from the overlay (main thread) and the
+  * --devedit script into one queue; the game thread applies them in DevEdit_Apply, called from
+@@ -57,7 +58,7 @@ static int script_count, script_next;
+ 
+ static const char *const kind_names[DEVEDIT_KINDS] = {
+     "flag", "progress", "bits", "rank", "digi", "skill", "name", "adddigi", "bag", "bagadd",
+-    "storage", "part", "broken", "beetle", "warp", "floor", "dump",
++    "storage", "part", "broken", "beetle", "warp", "floor", "dump", "evofill",
+ };
+ static const char *const field_names[DEVDIGI_FIELDS] = {
+     "species", "level", "maxlevel", "exp", "dp", "hp", "maxhp", "mp", "maxmp", "attack", "defense", "speed",
+@@ -793,6 +794,17 @@ static void apply(const DevEdit *e) {
+     case DEVEDIT_DUMP:
+         dump();
+         return;
++    case DEVEDIT_EVOFILL:
++        if (!in_battle()) {
++            refuse(e, "not in battle");
++            return;
++        }
++        if (!Host_FpBattleEvo()) {
++            refuse(e, "battle digivolution is off (F1)");
++            return;
++        }
++        LOG("evofill: DP full for %d party Digimon\n", vb, Stg30_EvoDevFill());
++        return;
+     }
+     refuse(e, "unknown edit");
+ }
+@@ -946,6 +958,7 @@ int DevEdit_Script(const char *arg) {
+         e.d = n > 8 ? v[8] : -1; /* -1: the species' learned skill (resolved at apply) */
+         break;
+     case DEVEDIT_DUMP:
++    case DEVEDIT_EVOFILL:
+         if (rest[0] != 0) {
+             goto bad;
+         }
+diff --git a/host/devedit.h b/host/devedit.h
+index 9b87041..3fdf602 100644
+--- a/host/devedit.h
++++ b/host/devedit.h
+@@ -33,6 +33,7 @@ typedef enum {
+     DEVEDIT_WARP,      /* a game mode (0x301..0x32E city, 0x200 domain), b modeArg */
+     DEVEDIT_FLOOR,     /* a floor of the current domain */
+     DEVEDIT_DUMP,      /* log the edited state ([devstate] lines), changes nothing */
++    DEVEDIT_EVOFILL,   /* in battle: fill the DP gauge of every party Digimon that can digivolve */
+     DEVEDIT_KINDS
+ } DevEditKind;
+ 
+diff --git a/host/devui.cpp b/host/devui.cpp
+index 3364a80..a8df4bb 100644
+--- a/host/devui.cpp
++++ b/host/devui.cpp
+@@ -1183,20 +1183,46 @@ void edit_log(void) {
+     }
+ }
+ 
++/* Tamer rank titles (Save_GameState.rank 0..10; the same in all three title sets in English) */
++const char *const k_rank_titles[11] = { "Cadet", "Beginner", "Amateur", "Rookie", "Normal", "Pro",
++                                        "Expert", "Elite", "Commander", "Chief", "Master" };
++
+ void edit_tamer(const DevSnap &s) {
+-    static Field bits, rank, progress;
++    static Field bits, progress;
++    char preview[32];
+ 
+     if (int_set("bits", bits, s.bits, 9)) {
+         push(edit_rec(DEVEDIT_BITS, bits.buf));
+     }
+     ImGui::SameLine();
+-    if (int_set("rank", rank, s.rank, 4)) {
+-        push(edit_rec(DEVEDIT_RANK, rank.buf));
+-    }
+-    ImGui::SameLine();
+     if (int_set("progress", progress, s.progress, 4)) {
+         push(edit_rec(DEVEDIT_PROGRESS, progress.buf));
+     }
++    /* Forbs Hidden Mods testing: tamer rank by title, and the battle digivolution DP gauge */
++    if (s.rank <= 10) {
++        snprintf(preview, sizeof(preview), "%d %s", s.rank, k_rank_titles[s.rank]);
++    } else {
++        snprintf(preview, sizeof(preview), "%d (not a rank)", s.rank);
++    }
++    ImGui::SetNextItemWidth(ImGui::CalcTextSize("10 Commander").x + ImGui::GetFrameHeight() * 2);
++    if (ImGui::BeginCombo("tamer rank", preview)) {
++        for (int i = 0; i <= 10; i++) {
++            char item[32];
++
++            snprintf(item, sizeof(item), "%d %s", i, k_rank_titles[i]);
++            if (ImGui::Selectable(item, s.rank == i)) {
++                push(edit_rec(DEVEDIT_RANK, i));
++            }
++        }
++        ImGui::EndCombo();
++    }
++    ImGui::SameLine();
++    ImGui::TextDisabled("(battle digivolution: Champion from 5, Ultimate from 8)");
++    if (ImGui::SmallButton("Fill DP")) {
++        push(edit_rec(DEVEDIT_EVOFILL));
++    }
++    ImGui::SameLine();
++    ImGui::TextDisabled("in battle: every party Digimon that can digivolve gets a full DP gauge");
+ }
+ 
+ void edit_digi(const DevSnap &s, int slot) {
 diff --git a/host/host.h b/host/host.h
 index 20de1e5..889e12b 100644
 --- a/host/host.h
@@ -898,10 +1013,10 @@ index f0e5eaf..7706915 100644
  } // namespace
 diff --git a/include/stag3000/evo_native.h b/include/stag3000/evo_native.h
 new file mode 100644
-index 0000000..e3dc309
+index 0000000..b916c41
 --- /dev/null
 +++ b/include/stag3000/evo_native.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +#ifndef STAG3000_EVO_NATIVE_H
 +#define STAG3000_EVO_NATIVE_H
 +
@@ -928,6 +1043,9 @@ index 0000000..e3dc309
 + * how far the party HUD is raised for it (0: off this battle) */
 +void Stg30_EvoDrawBar(s32 slot, void *parts);
 +s32 Stg30_EvoHudLift(void);
++/* host/devedit.c (F2, in battle): fill the DP gauge of every party Digimon that can digivolve;
++ * -> how many */
++s32 Stg30_EvoDevFill(void);
 +
 +#endif
 +#endif
@@ -1269,10 +1387,10 @@ index f23b69a..180d063 100644
          }
 diff --git a/src/stag3000/evo_native.inc b/src/stag3000/evo_native.inc
 new file mode 100644
-index 0000000..14ccc0f
+index 0000000..7b0354b
 --- /dev/null
 +++ b/src/stag3000/evo_native.inc
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,753 @@
 +/* Battle digivolution (Forbs Hidden Mods, native only; include/stag3000/evo_native.h).
 + * Included by battle.c under DW2_NATIVE.
 + *
@@ -1402,6 +1520,23 @@ index 0000000..14ccc0f
 +    }
 +    return Stg30_Evo[slot].energy >= EVO_MAX && Stg30_Evo[slot].turnsLeft == 0 && !Stg30_Evo[slot].revert &&
 +           Stg30_Battle.digis[slot].hp != 0 && Stg30_EvoTarget(slot) != 0;
++}
++
++/* F2 dev overlay (host/devedit.c, in battle): every party Digimon that can digivolve now gets a
++ * full DP gauge. -> how many. */
++s32 Stg30_EvoDevFill(void) {
++    s32 n = 0;
++    s32 i;
++
++    for (i = 0; i < 3; i++) {
++        Stg30Evo *e = &Stg30_Evo[i];
++
++        if (e->turnsLeft == 0 && !e->revert && Stg30_Battle.digis[i].hp != 0 && Stg30_EvoTarget(i) != 0) {
++            e->energy = EVO_MAX;
++            n++;
++        }
++    }
++    return n;
 +}
 +
 +void Stg30_EvoRequest(s32 slot, s32 on) {

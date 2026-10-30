@@ -1,7 +1,7 @@
 From 7c7abd0aa221eec16a57750128844e24528ff0ee Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Thu, 29 Oct 2026 20:05:25 +0000
-Subject: [PATCH 26/27] Model mods: labelled file names ("005C Agumon
+Subject: [PATCH 26/28] Model mods: labelled file names ("005C Agumon
  model.bin")
 
 A mods file may carry a label after its 4-digit number, after a space, "_" or

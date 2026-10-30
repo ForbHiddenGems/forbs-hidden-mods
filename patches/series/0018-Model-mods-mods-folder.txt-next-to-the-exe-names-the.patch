@@ -1,7 +1,7 @@
 From 704c757741667ad76446130b7df14563dcb74f12 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Wed, 28 Oct 2026 12:20:29 +0000
-Subject: [PATCH 18/27] Model mods: mods-folder.txt next to the exe names the
+Subject: [PATCH 18/28] Model mods: mods-folder.txt next to the exe names the
  mods folder to read first
 
 Forbs Hidden Mods' forbs.py writes it into every build so they all read the one

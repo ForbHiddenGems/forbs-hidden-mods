@@ -1,7 +1,7 @@
 From 3e22d4bfa68073db238133ae68d5c9d50dbd262a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 08:40:24 +0000
-Subject: [PATCH 14/27] Model mods: replacement files from mods/<hex id>.bin
+Subject: [PATCH 14/28] Model mods: replacement files from mods/<hex id>.bin
  (native only)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

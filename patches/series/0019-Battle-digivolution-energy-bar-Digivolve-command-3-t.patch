@@ -1,7 +1,7 @@
 From d10066aa5241dd1739060fd2efc145e8abe580e5 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Wed, 28 Oct 2026 22:34:37 +0000
-Subject: [PATCH 19/27] Battle digivolution: energy bar, Digivolve command, 3
+Subject: [PATCH 19/28] Battle digivolution: energy bar, Digivolve command, 3
  turns as the Champion form
 
 Each party Digimon fills an energy bar by dealing and taking damage. Full, a

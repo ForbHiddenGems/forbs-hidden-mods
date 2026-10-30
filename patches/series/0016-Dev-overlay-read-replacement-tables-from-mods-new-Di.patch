@@ -1,7 +1,7 @@
 From 0ee2e0f90deb5ca5f91c47fd89cef4b56ec810aa Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 22:37:07 +0000
-Subject: [PATCH 16/27] Dev overlay: read replacement tables from mods/ (new
+Subject: [PATCH 16/28] Dev overlay: read replacement tables from mods/ (new
  Digimon and items show up)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

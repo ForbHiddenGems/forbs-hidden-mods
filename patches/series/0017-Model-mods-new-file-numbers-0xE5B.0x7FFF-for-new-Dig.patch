@@ -1,7 +1,7 @@
 From abd601da7665958dec667ecdda0afcba5db814df Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 22:55:18 +0000
-Subject: [PATCH 17/27] Model mods: new file numbers (0xE5B..0x7FFF) for new
+Subject: [PATCH 17/28] Model mods: new file numbers (0xE5B..0x7FFF) for new
  Digimon's models and animations
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

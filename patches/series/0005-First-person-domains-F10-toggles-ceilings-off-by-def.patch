@@ -1,7 +1,7 @@
 From 31ce9e163bfbd4a91c9c6f9544bdc51d522dc855 Mon Sep 17 00:00:00 2001
 From: FP mod <fpmod@localhost>
 Date: Mon, 26 Oct 2026 19:54:33 +0000
-Subject: [PATCH 05/27] First-person domains: F10 toggles ceilings, off by
+Subject: [PATCH 05/28] First-person domains: F10 toggles ceilings, off by
  default
 
 New settings key fp_ceilings (default 0), so an older fp_ceiling = 1 line
