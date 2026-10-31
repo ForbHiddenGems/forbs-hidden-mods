@@ -351,6 +351,21 @@ def encode_texture(w, h, rgba, groups, tim_template, keep_palette_slots, texanim
                 raise ValueError("no free texture row left for a palette (too many materials)")
             cluts[gi] = free.pop(0)
             taken.add(cluts[gi])
+    # texels just outside the faces: the PS1 samples a face's edge texels too, so they get the
+    # palette of the nearest face's material (two rounds of growing the covered area), else they
+    # would be read through another palette and show as specks along the edges
+    slots = set()
+    for c in cluts.values():
+        y, xs = c >> 6, (c & 0x3F) * 64
+        slots.update((x, y) for x in range(xs, xs + 64))
+    for _ in range(2):
+        grow = {}
+        for (x, y), o in cover.items():
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                q = (x + dx, y + dy)
+                if 0 <= q[0] < w and 0 <= q[1] < h and q not in cover and q not in slots:
+                    grow.setdefault(q, o)
+        cover.update(grow)
     # colours per group
     def px(x, y):
         o = (y * w + x) * 4
